@@ -60,6 +60,7 @@ import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.MapperService.MergeReason;
 import org.opensearch.indices.IndicesService;
+import org.opensearch.ingest.IngestService;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -240,6 +241,9 @@ public class MetadataMappingService {
                                 indexMapperServices.put(index, mapperService);
                                 // add mappings for all types, we need them for cross-type validation
                                 mapperService.merge(indexMetadata, MergeReason.MAPPING_RECOVERY);
+
+                                // TODO: When even we update the mapping we clean up the internal pipeline generated
+                                //  based on the mapping
                             }
                         }
                         currentState = applyRequest(currentState, request, indexMapperServices);

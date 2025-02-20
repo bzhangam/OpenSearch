@@ -37,6 +37,7 @@ import org.opensearch.common.Nullable;
 import org.opensearch.common.metrics.OperationMetrics;
 import org.opensearch.script.ScriptService;
 
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -66,6 +67,7 @@ public final class Pipeline {
     private final CompoundProcessor compoundProcessor;
     private final OperationMetrics metrics;
     private final LongSupplier relativeTimeProvider;
+    private volatile Instant lastUpdateTime;
 
     public Pipeline(String id, @Nullable String description, @Nullable Integer version, CompoundProcessor compoundProcessor) {
         this(id, description, version, compoundProcessor, System::nanoTime);
@@ -85,6 +87,7 @@ public final class Pipeline {
         this.version = version;
         this.metrics = new OperationMetrics();
         this.relativeTimeProvider = relativeTimeProvider;
+        lastUpdateTime = Instant.now();
     }
 
     public static Pipeline create(
@@ -147,6 +150,8 @@ public final class Pipeline {
     public String getId() {
         return id;
     }
+
+
 
     /**
      * An optional description of what this pipeline is doing to the data gets processed by this pipeline.

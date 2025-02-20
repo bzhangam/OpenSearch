@@ -73,6 +73,8 @@ import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.seqno.SequenceNumbers;
 import org.opensearch.indices.replication.SegmentReplicationSource;
 import org.opensearch.indices.replication.common.ReplicationType;
+import org.opensearch.ingest.IngestService;
+import org.opensearch.ingest.Pipeline;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -761,6 +763,8 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         this.numberOfSearchOnlyReplicas = numberOfSearchOnlyReplicas;
         this.totalNumberOfShards = numberOfShards * (numberOfReplicas + numberOfSearchOnlyReplicas + 1);
         this.settings = settings;
+        // Whenever we want to modify the mapping in the node we will create a new index metadata for it so that
+        // we can leverage this to ensure we invalidate the cached internal pipeline when there is an index change.
         this.mappings = Collections.unmodifiableMap(mappings);
         this.customData = Collections.unmodifiableMap(customData);
         this.aliases = Collections.unmodifiableMap(aliases);
@@ -781,6 +785,9 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         this.indexTotalShardsPerNodeLimit = indexTotalShardsPerNodeLimit;
         this.context = context;
         assert numberOfShards * routingFactor == routingNumShards : routingNumShards + " must be a multiple of " + numberOfShards;
+
+        // Need to confirm with Sarat to see if it does work this way
+        IngestService.invalidateCachedInternalPipelines(index);
     }
 
     public Index getIndex() {

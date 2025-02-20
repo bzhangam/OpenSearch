@@ -122,6 +122,7 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
 
     private String pipeline;
     private String finalPipeline;
+    private String internalFinalPipeline;
 
     private boolean isPipelineResolved;
 
@@ -331,6 +332,21 @@ public class IndexRequest extends ReplicatedWriteRequest<IndexRequest> implement
      */
     public String getFinalPipeline() {
         return this.finalPipeline;
+    }
+
+    /**
+     * Sets the internal ingest pipeline to be executed before indexing the document
+     */
+    public IndexRequest setInternalFinalPipeline(String pipeline) {
+        this.internalFinalPipeline = pipeline;
+        return this;
+    }
+
+    /**
+     * Returns the internal ingest pipeline to be executed before indexing the document
+     */
+    public String getInternalFinalPipeline() {
+        return this.internalFinalPipeline;
     }
 
     /**

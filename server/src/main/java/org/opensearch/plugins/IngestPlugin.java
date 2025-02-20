@@ -54,4 +54,16 @@ public interface IngestPlugin {
     default Map<String, Processor.Factory> getProcessors(Processor.Parameters parameters) {
         return Collections.emptyMap();
     }
+
+    /**
+     * Returns additional internal ingest processor types added by this plugin.
+     * <p>
+     * The key of the returned {@link Map} is the unique name for the processor,
+     * and the value is a {@link org.opensearch.ingest.Processor.Factory}
+     * to create the processor from a system generated pipeline configuration. Normally it's generated based on
+     * the index configuration.
+     */
+    default Map<String, Processor.Factory> getInternalProcessors(Processor.Parameters parameters) {
+        return Collections.emptyMap();
+    }
 }

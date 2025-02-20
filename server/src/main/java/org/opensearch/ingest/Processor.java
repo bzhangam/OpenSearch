@@ -152,6 +152,10 @@ public interface Processor {
          */
         Processor create(Map<String, Factory> processorFactories, String tag, String description, Map<String, Object> config)
             throws Exception;
+
+        default boolean isInternal(){
+            return false;
+        }
     }
 
     /**
