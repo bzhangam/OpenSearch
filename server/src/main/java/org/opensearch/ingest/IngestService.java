@@ -68,6 +68,7 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.AbstractRunnable;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.index.Index;
 import org.opensearch.core.service.ReportingService;
 import org.opensearch.env.Environment;
 import org.opensearch.gateway.GatewayService;
@@ -125,6 +126,8 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
     private final ClusterService clusterService;
     private final ScriptService scriptService;
     private final Map<String, Processor.Factory> processorFactories;
+    // TODO: Make it final
+    private static Map<String, Processor.Factory> internalProcessorFactories = Map.of();
     // Ideally this should be in IngestMetadata class, but we don't have the processor factories around there.
     // We know of all the processor factories when a node with all its plugin have been initialized. Also some
     // processor factories rely on other node services. Custom metadata is statically registered when classes
@@ -138,6 +141,21 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
     private volatile ClusterState state;
     private volatile int maxIngestProcessorCount;
 
+    // TODO: This needs to be optimized since we should make it work like a cache. When it's too old we
+    // should invalidate it. In this way we can mitigate the issue that when plugin has changed the logic
+    // so it can create different processors. And when we install/uninstall a plugin we should also clear
+    // this cache to ensure the pipeline is created correctly with latest plugins.
+    // For now this is just used to hold the index based pipeline. index-uuid -> pipeline
+    private volatile static Map<String, Pipeline> internalPipelines = new HashMap<>();
+
+    public static void invalidateCachedInternalPipelines(Index index){
+        internalPipelines.remove(getInternalPipelineId(index));
+    }
+
+    private static String getInternalPipelineId(Index index){
+        return "_internal_" + index.getName() + "_" + index.getUUID();
+    }
+
     public IngestService(
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -150,20 +168,27 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
     ) {
         this.clusterService = clusterService;
         this.scriptService = scriptService;
+        final Processor.Parameters processorParameters = new Processor.Parameters(
+            env,
+            scriptService,
+            analysisRegistry,
+            threadPool.getThreadContext(),
+            threadPool::relativeTimeInMillis,
+            (delay, command) -> threadPool.schedule(command, TimeValue.timeValueMillis(delay), ThreadPool.Names.GENERIC),
+            this,
+            client,
+            threadPool.generic()::execute,
+            indicesService
+        );
         this.processorFactories = processorFactories(
             ingestPlugins,
-            new Processor.Parameters(
-                env,
-                scriptService,
-                analysisRegistry,
-                threadPool.getThreadContext(),
-                threadPool::relativeTimeInMillis,
-                (delay, command) -> threadPool.schedule(command, TimeValue.timeValueMillis(delay), ThreadPool.Names.GENERIC),
-                this,
-                client,
-                threadPool.generic()::execute,
-                indicesService
-            )
+            processorParameters,
+            false
+        );
+        internalProcessorFactories = processorFactories(
+            ingestPlugins,
+            processorParameters,
+            true
         );
         this.threadPool = threadPool;
 
@@ -178,10 +203,11 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         this.maxIngestProcessorCount = maxIngestProcessorCount;
     }
 
-    private static Map<String, Processor.Factory> processorFactories(List<IngestPlugin> ingestPlugins, Processor.Parameters parameters) {
+    private static Map<String, Processor.Factory> processorFactories(List<IngestPlugin> ingestPlugins, Processor.Parameters parameters, boolean isInternal) {
         Map<String, Processor.Factory> processorFactories = new HashMap<>();
         for (IngestPlugin ingestPlugin : ingestPlugins) {
-            Map<String, Processor.Factory> newProcessors = ingestPlugin.getProcessors(parameters);
+            Map<String, Processor.Factory> newProcessors = isInternal ?
+                ingestPlugin.getInternalProcessors(parameters) : ingestPlugin.getProcessors(parameters);
             for (Map.Entry<String, Processor.Factory> entry : newProcessors.entrySet()) {
                 if (processorFactories.put(entry.getKey(), entry.getValue()) != null) {
                     throw new IllegalArgumentException("Ingest processor [" + entry.getKey() + "] is already registered");
@@ -191,15 +217,18 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         return Collections.unmodifiableMap(processorFactories);
     }
 
+    //TODO: Make it non static since now it relies on some context to do this work
     public static boolean resolvePipelines(
         final DocWriteRequest<?> originalRequest,
         final IndexRequest indexRequest,
         final Metadata metadata
     ) {
+
         if (indexRequest.isPipelineResolved() == false) {
             final String requestPipeline = indexRequest.getPipeline();
             indexRequest.setPipeline(NOOP_PIPELINE_NAME);
             indexRequest.setFinalPipeline(NOOP_PIPELINE_NAME);
+            indexRequest.setInternalFinalPipeline(NOOP_PIPELINE_NAME);
             String defaultPipeline = null;
             String finalPipeline = null;
             IndexMetadata indexMetadata = null;
@@ -222,6 +251,8 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                 }
             }
             if (indexMetadata != null) {
+                resolveInternalPipeline(indexMetadata, indexRequest);
+
                 final Settings indexSettings = indexMetadata.getSettings();
                 if (IndexSettings.DEFAULT_PIPELINE.exists(indexSettings)) {
                     // find the default pipeline if one is defined from an existing index setting
@@ -234,6 +265,9 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                     indexRequest.setFinalPipeline(finalPipeline);
                 }
             } else if (indexRequest.index() != null) {
+                //TODO: Need to handle the template use case properly to create right internal pipeline with
+                // right internal processors.
+
                 // the index does not exist yet (and this is a valid request), so match index
                 // templates to look for pipelines in either a matching V2 template (which takes
                 // precedence), or if a V2 template does not match, any V1 templates
@@ -271,6 +305,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                             // we can break if we have already collected a default and final pipeline
                             break;
                         }
+
                     }
                     indexRequest.setPipeline(defaultPipeline != null ? defaultPipeline : NOOP_PIPELINE_NAME);
                     indexRequest.setFinalPipeline(finalPipeline != null ? finalPipeline : NOOP_PIPELINE_NAME);
@@ -296,7 +331,60 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
 
         // return whether this index request has a pipeline
         return NOOP_PIPELINE_NAME.equals(indexRequest.getPipeline()) == false
-            || NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false;
+            || NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false
+            || NOOP_PIPELINE_NAME.equals(indexRequest.getInternalFinalPipeline()) == false;
+    }
+
+    //TODO: We don't know the the index will be updated since we don't record the last update time now.
+    // Either need to add that time or we should remove the cached internal pipeline whenever we try to update
+    // the mapping. Probably it's better to remove the cache since we already make it a static we can easily access and
+    // modify. The only concern is that if index mapping update happens in a different node than the ingest node then
+    // we will have a problem. We may want to leverage the cluster state/indices service to store this info to ensure
+    // they are in sync across nodes.
+    // Besides for the use case we haven't created the index and need to resolve the template
+    // to get the mapping. We need to resolve it in ingest service since ingest happens before auto creating
+    // those pipelines. In first request we resolve the pipeline and then cache it.
+    // The cached pipelines need to be shared across the nodes to ensure they reflect the latest mapping.
+    private static void resolveInternalPipeline(IndexMetadata indexMetadata, IndexRequest indexRequest) {
+        if(internalProcessorFactories.isEmpty()) return;
+        // Check if there is already one in the cache
+
+        final String id = indexMetadata.getIndex().toString();
+        if(internalPipelines.containsKey(id) == false) {
+            if(indexMetadata.mapping() != null){
+                Map<String, Object> indexMapping = Objects.requireNonNull(indexMetadata.mapping()).sourceAsMap();
+
+                List<Processor> indexBasedIngestProcessors = new ArrayList<>();
+                String tag = "Index Based Ingest Processor";
+                String description = "An ingest processor created based on the index configuration.";
+                internalProcessorFactories.forEach((key, value) -> {
+                    Map<String, Object> config = new HashMap<>();
+                    config.put("index_mapping", indexMapping);
+                    try {
+                        Processor processor = value.create(internalProcessorFactories, tag, description, config);
+                        if(processor != null){
+                            indexBasedIngestProcessors.add(processor);
+                        }
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+
+                if(indexBasedIngestProcessors.isEmpty() == false) {
+                    CompoundProcessor compoundProcessor = new CompoundProcessor(
+                        false,
+                        Collections.unmodifiableList(indexBasedIngestProcessors),
+                        List.of()
+                    );
+                    String pipelineDescription = "System generated internal pipeline based on index configuration.";
+                    Pipeline pipeline = new Pipeline(id, pipelineDescription, null, compoundProcessor);;
+                    internalPipelines.put(id, pipeline);
+                    indexRequest.setInternalFinalPipeline(id);
+                }
+            }
+        }else {
+            indexRequest.setInternalFinalPipeline(id);
+        }
     }
 
     public ClusterService getClusterService() {
@@ -591,21 +679,29 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                 continue;
             }
 
+            //TODO: Why we want to reset pipeline at request level?
             final String pipelineId = indexRequest.getPipeline();
             indexRequest.setPipeline(NOOP_PIPELINE_NAME);
             final String finalPipelineId = indexRequest.getFinalPipeline();
             indexRequest.setFinalPipeline(NOOP_PIPELINE_NAME);
-            boolean hasFinalPipeline = true;
-            final List<String> pipelines;
-            if (IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false
-                && IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false) {
-                pipelines = Arrays.asList(pipelineId, finalPipelineId);
-            } else if (IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false) {
-                pipelines = Collections.singletonList(pipelineId);
-                hasFinalPipeline = false;
-            } else if (IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false) {
-                pipelines = Collections.singletonList(finalPipelineId);
-            } else {
+            final String internalFinalPipelineId = indexRequest.getInternalFinalPipeline();
+            indexRequest.setInternalFinalPipeline(NOOP_PIPELINE_NAME);
+            boolean hasUserDefinedFinalPipeline = false;
+            final List<String> pipelines = new ArrayList<>();
+            if(IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false){
+                pipelines.add(pipelineId);
+            }
+
+            if(IngestService.NOOP_PIPELINE_NAME.equals(internalFinalPipelineId) == false){
+                pipelines.add(internalFinalPipelineId);
+            }
+
+            if(IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false){
+                pipelines.add(pipelineId);
+                hasUserDefinedFinalPipeline = true;
+            }
+
+            if(pipelines.isEmpty() == true) {
                 if (counter.decrementAndGet() == 0) {
                     onCompletion.accept(originalThread, null);
                 }
@@ -614,7 +710,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                 continue;
             }
 
-            indexRequestWrappers.add(new IndexRequestWrapper(i, indexRequest, pipelines, hasFinalPipeline));
+            indexRequestWrappers.add(new IndexRequestWrapper(i, indexRequest, Collections.unmodifiableList(pipelines), hasUserDefinedFinalPipeline));
             i++;
         }
 
@@ -851,11 +947,23 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         while (it.hasNext()) {
             final String pipelineId = it.next();
             try {
+                Pipeline pipeline = null;
+                Pipeline internalFinalPipeline = null;
+                // TODO: Make it clear what pipeline we are executing
+                // It's more clear if we separate the internal final pipeline and the user defined final pipeline
+                // check why only want to allow two pipelines? If it's not a internal limit we should be good.
                 PipelineHolder holder = pipelines.get(pipelineId);
                 if (holder == null) {
-                    throw new IllegalArgumentException("pipeline with id [" + pipelineId + "] does not exist");
+                    internalFinalPipeline = internalPipelines.get(pipelineId);
+                    if(internalFinalPipeline == null) {
+                        throw new IllegalArgumentException("pipeline with id [" + pipelineId + "] does not exist");
+                    }else {
+                        pipeline = internalFinalPipeline;
+                    }
+                }else {
+                    pipeline = holder.pipeline;
                 }
-                Pipeline pipeline = holder.pipeline;
+
                 String originalIndex = indexRequest.indices()[0];
                 innerExecute(slot, indexRequest, pipeline, onDropped, e -> {
                     if (e != null) {
@@ -888,12 +996,20 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                             it.forEachRemaining($ -> {});
                             indexRequest.isPipelineResolved(false);
                             resolvePipelines(null, indexRequest, state.metadata());
-                            if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false) {
-                                newIt = Collections.singleton(indexRequest.getFinalPipeline()).iterator();
-                                newHasFinalPipeline = true;
-                            } else {
-                                newIt = Collections.emptyIterator();
+
+                            List<String> pipelines = new ArrayList<>();
+
+                            if(IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getInternalFinalPipeline()) == false){
+                                pipelines.add(indexRequest.getInternalFinalPipeline());
                             }
+
+                            if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false
+                            ) {
+                                pipelines.add(indexRequest.getFinalPipeline());
+                                newHasFinalPipeline = true;
+                            }
+
+                            newIt = pipelines.iterator();
                         }
                     }
 

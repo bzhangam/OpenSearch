@@ -283,32 +283,32 @@ public class TextFieldMapper extends ParametrizedFieldMapper {
         protected final Parameter<Boolean> index = Parameter.indexParam(m -> toType(m).mappedFieldType.isSearchable(), true);
         protected final Parameter<Boolean> store = Parameter.storeParam(m -> toType(m).fieldType.stored(), false);
 
-        final Parameter<SimilarityProvider> similarity = TextParams.similarity(m -> toType(m).similarity);
+        protected final Parameter<SimilarityProvider> similarity = TextParams.similarity(m -> toType(m).similarity);
 
-        final Parameter<String> indexOptions = TextParams.indexOptions(m -> toType(m).indexOptions);
-        final Parameter<Boolean> norms = TextParams.norms(true, m -> toType(m).fieldType.omitNorms() == false);
-        final Parameter<String> termVectors = TextParams.termVectors(m -> toType(m).termVectors);
-        final Parameter<Integer> positionIncrementGap = Parameter.intParam(
+        protected final Parameter<String> indexOptions = TextParams.indexOptions(m -> toType(m).indexOptions);
+        protected final Parameter<Boolean> norms = TextParams.norms(true, m -> toType(m).fieldType.omitNorms() == false);
+        protected final Parameter<String> termVectors = TextParams.termVectors(m -> toType(m).termVectors);
+        protected final Parameter<Integer> positionIncrementGap = Parameter.intParam(
             "position_increment_gap",
             false,
             m -> toType(m).positionIncrementGap,
             POSITION_INCREMENT_GAP_USE_ANALYZER
         );
 
-        final Parameter<Boolean> fieldData = Parameter.boolParam(
+        protected final Parameter<Boolean> fieldData = Parameter.boolParam(
             "fielddata",
             true,
             m -> ((TextFieldType) toType(m).mappedFieldType).fielddata,
             false
         );
-        final Parameter<FielddataFrequencyFilter> freqFilter = new Parameter<>(
+        protected final Parameter<FielddataFrequencyFilter> freqFilter = new Parameter<>(
             "fielddata_frequency_filter",
             true,
             () -> DEFAULT_FILTER,
             TextFieldMapper::parseFrequencyFilter,
             m -> toType(m).freqFilter
         );
-        final Parameter<Boolean> eagerGlobalOrdinals = Parameter.boolParam(
+        protected final Parameter<Boolean> eagerGlobalOrdinals = Parameter.boolParam(
             "eager_global_ordinals",
             true,
             m -> toType(m).mappedFieldType.eagerGlobalOrdinals(),
@@ -334,7 +334,7 @@ public class TextFieldMapper extends ParametrizedFieldMapper {
         protected final Parameter<Float> boost = Parameter.boostParam();
         protected final Parameter<Map<String, String>> meta = Parameter.metaParam();
 
-        final TextParams.Analyzers analyzers;
+        protected final TextParams.Analyzers analyzers;
 
         public Builder(String name, IndexAnalyzers indexAnalyzers) {
             this(name, Version.CURRENT, indexAnalyzers);

@@ -36,11 +36,13 @@ import org.opensearch.common.annotation.InternalApi;
 import org.opensearch.common.collect.Iterators;
 import org.opensearch.common.regex.Regex;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 

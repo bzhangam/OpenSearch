@@ -240,6 +240,14 @@ public abstract class FieldMapper extends Mapper implements Cloneable {
         return mappedFieldType;
     }
 
+    public List<Mapper> getInternalMappers() {
+        return Collections.emptyList();
+    }
+
+    public boolean allowToBeModeledAsAnObject() {
+        return false;
+    }
+
     /**
      * List of fields where this field should be copied to
      */

@@ -190,6 +190,7 @@ public class MatchOnlyTextFieldMapper extends TextFieldMapper {
 
         @Override
         protected List<Parameter<?>> getParameters() {
+            // Add plugin supported parameters
             return Arrays.asList(
                 index,
                 store,

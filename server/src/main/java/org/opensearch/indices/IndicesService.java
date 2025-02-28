@@ -47,6 +47,7 @@ import org.opensearch.action.admin.indices.stats.CommonStatsFlags;
 import org.opensearch.action.admin.indices.stats.CommonStatsFlags.Flag;
 import org.opensearch.action.admin.indices.stats.IndexShardStats;
 import org.opensearch.action.admin.indices.stats.ShardStats;
+import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchRequestStats;
 import org.opensearch.action.search.SearchType;
 import org.opensearch.client.Client;
@@ -1922,8 +1923,27 @@ public class IndicesService extends AbstractLifecycleComponent
     /**
      * Returns a new {@link QueryRewriteContext} with the given {@code now} provider
      */
+    public List<IndexService> getTargetIndexServiceList(SearchRequest searchRequest) {
+        Index[] targetIndices = indexNameExpressionResolver.concreteIndices(clusterService().state(), searchRequest);
+        List<IndexService> targetIndicesList = new ArrayList<>();
+        for (Index index : targetIndices) {
+            IndexService indexService = indexServiceSafe(index);
+            if(indexService != null){
+                targetIndicesList.add(indexService);
+            }
+        }
+        return targetIndicesList;
+    }
+
+    /**
+     * Returns a new {@link QueryRewriteContext} with the given {@code now} provider
+     */
     public QueryRewriteContext getRewriteContext(LongSupplier nowInMillis) {
         return getRewriteContext(nowInMillis, false);
+    }
+
+    public QueryRewriteContext getRewriteContext(LongSupplier nowInMillis, SearchRequest searchRequest) {
+        return new QueryRewriteContext(xContentRegistry, namedWriteableRegistry, client, nowInMillis, false, getTargetIndexServiceList(searchRequest));
     }
 
     /**

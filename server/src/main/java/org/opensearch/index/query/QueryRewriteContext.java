@@ -38,8 +38,11 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
+import org.opensearch.index.IndexService;
+import org.opensearch.ingest.IngestService;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
@@ -57,6 +60,7 @@ public class QueryRewriteContext {
     protected final LongSupplier nowInMillis;
     private final List<BiConsumer<Client, ActionListener<?>>> asyncActions = new ArrayList<>();
     private final boolean validate;
+    private final List<IndexService> targetIndexServices;
 
     public QueryRewriteContext(
         NamedXContentRegistry xContentRegistry,
@@ -64,7 +68,7 @@ public class QueryRewriteContext {
         Client client,
         LongSupplier nowInMillis
     ) {
-        this(xContentRegistry, writeableRegistry, client, nowInMillis, false);
+        this(xContentRegistry, writeableRegistry, client, nowInMillis, false, Collections.emptyList());
     }
 
     public QueryRewriteContext(
@@ -74,12 +78,28 @@ public class QueryRewriteContext {
         LongSupplier nowInMillis,
         boolean validate
     ) {
+        this.xContentRegistry = xContentRegistry;
+        this.writeableRegistry = writeableRegistry;
+        this.client = client;
+        this.nowInMillis = nowInMillis;
+        this.validate = validate;
+        this.targetIndexServices = Collections.emptyList();
+    }
+
+    public QueryRewriteContext(
+        NamedXContentRegistry xContentRegistry,
+        NamedWriteableRegistry writeableRegistry,
+        Client client,
+        LongSupplier nowInMillis,
+        boolean validate, List<IndexService> targetIndexServices
+    ) {
 
         this.xContentRegistry = xContentRegistry;
         this.writeableRegistry = writeableRegistry;
         this.client = client;
         this.nowInMillis = nowInMillis;
         this.validate = validate;
+        this.targetIndexServices = targetIndexServices;
     }
 
     /**
@@ -158,5 +178,9 @@ public class QueryRewriteContext {
 
     public boolean validate() {
         return validate;
+    }
+
+    public List<IndexService> getTargetIndexServices() {
+        return targetIndexServices;
     }
 }

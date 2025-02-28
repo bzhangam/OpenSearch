@@ -126,6 +126,7 @@ import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.internal.ShardSearchContextId;
 import org.opensearch.search.internal.ShardSearchRequest;
 import org.opensearch.search.lookup.SearchLookup;
+import org.opensearch.search.pipeline.PipelinedRequest;
 import org.opensearch.search.profile.Profilers;
 import org.opensearch.search.query.QueryPhase;
 import org.opensearch.search.query.QuerySearchRequest;
@@ -1777,6 +1778,13 @@ public class SearchService extends AbstractLifecycleComponent implements IndexEv
      */
     public QueryRewriteContext getRewriteContext(LongSupplier nowInMillis) {
         return indicesService.getRewriteContext(nowInMillis);
+    }
+
+    /**
+     * Returns a new {@link QueryRewriteContext} with the given {@code now} provider
+     */
+    public QueryRewriteContext getRewriteContext(LongSupplier nowInMillis, PipelinedRequest searchRequest) {
+        return indicesService.getRewriteContext(nowInMillis, searchRequest);
     }
 
     /**

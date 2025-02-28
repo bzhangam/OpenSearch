@@ -95,6 +95,9 @@ public final class MappingLookup implements Iterable<Mapper> {
             objectMappers.add((ObjectMapper) mapper);
         } else if (mapper instanceof FieldMapper) {
             fieldMappers.add((FieldMapper) mapper);
+            for(Mapper internalMapper : ((FieldMapper) mapper).getInternalMappers()){
+                collect(internalMapper, objectMappers, fieldMappers, fieldAliasMappers);
+            }
         } else if (mapper instanceof FieldAliasMapper) {
             fieldAliasMappers.add((FieldAliasMapper) mapper);
         } else {
@@ -129,7 +132,7 @@ public final class MappingLookup implements Iterable<Mapper> {
         this.hasNested = hasNested;
 
         for (FieldMapper mapper : mappers) {
-            if (objects.containsKey(mapper.name())) {
+            if (objects.containsKey(mapper.name()) && mapper.allowToBeModeledAsAnObject() == false) {
                 throw new MapperParsingException("Field [" + mapper.name() + "] is defined both as an object and a field");
             }
             if (fieldMappers.put(mapper.name(), mapper) != null) {
