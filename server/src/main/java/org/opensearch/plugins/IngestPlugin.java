@@ -54,4 +54,59 @@ public interface IngestPlugin {
     default Map<String, Processor.Factory> getProcessors(Processor.Parameters parameters) {
         return Collections.emptyMap();
     }
+
+    /**
+     * Returns additional index based ingest processor types added by this plugin.
+     * <p>
+     * The key of the returned {@link Map} is the unique name for the processor, and the value is a {@link org.opensearch.ingest.Processor.Factory}
+     * to create the processor from a given index configuration.
+     *
+     */
+    default Map<String, Processor.Factory> getIndexBasedIngestProcessors(Processor.Parameters parameters) {
+        return Collections.emptyMap();
+    }
+
+    /**
+     * Define the keys we can use in the config for the index based ingest pipeline
+     */
+    class IndexBasedIngestPipelineConfigKeys {
+        /**
+         * Use this key to access the mappings of the index from the config
+         * example:
+         * {
+         *     "_doc":{
+         *         "properties":{
+         *             "fieldName":{
+         *                 "type": "text"
+         *             }
+         *         }
+         *     }
+         * }
+         */
+        public static final String INDEX_MAPPINGS = "index_mappings";
+
+        /**
+         *  Use this key to access the mappings of the matched templates of the index from the config. This will be used
+         *  for the case when we try to index a doc while the index has not been created. And the index name matches some
+         *  templates. In that case we should create the index based ingest pipeline based on the matched templates.
+         *
+         *  If there are multiple matched templates the later one can override the setting of the previous one if merge
+         *  rules are allowed. It works like you define the index first and then update it. So it will not be able to
+         *  override the field which is not updatable.
+         *  example mappings from templates:
+         *  [
+         *  {
+         *      "_doc":{
+         *          "properties":{
+         *              "fieldName":{
+         *                  "type": "text"
+         *              }
+         *          }
+         *      }
+         *  },
+         *  {...}
+         *  ]
+         */
+        public static final String INDEX_TEMPLATE_MAPPINGS = "index_template_mappings";
+    }
 }

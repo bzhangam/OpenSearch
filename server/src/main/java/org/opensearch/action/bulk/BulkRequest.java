@@ -46,8 +46,10 @@ import org.opensearch.action.support.WriteRequest;
 import org.opensearch.action.support.replication.ReplicationRequest;
 import org.opensearch.action.update.UpdateRequest;
 import org.opensearch.common.Nullable;
+import org.opensearch.common.UUIDs;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
@@ -62,6 +64,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
@@ -101,7 +104,13 @@ public class BulkRequest extends ActionRequest implements CompositeIndicesReques
 
     private long sizeInBytes = 0;
 
-    public BulkRequest() {}
+    private String uuid;
+
+    public BulkRequest() {
+        if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
+            uuid = UUIDs.randomBase64UUID().toLowerCase(Locale.ROOT);
+        }
+    }
 
     public BulkRequest(StreamInput in) throws IOException {
         super(in);
@@ -111,6 +120,9 @@ public class BulkRequest extends ActionRequest implements CompositeIndicesReques
         timeout = in.readTimeValue();
         if (in.getVersion().onOrAfter(Version.V_2_14_0)) {
             batchSize = in.readInt();
+        }
+        if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
+            uuid = in.readOptionalString();
         }
     }
 
@@ -482,6 +494,9 @@ public class BulkRequest extends ActionRequest implements CompositeIndicesReques
         if (out.getVersion().onOrAfter(Version.V_2_14_0)) {
             out.writeInt(batchSize);
         }
+        if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
+            out.writeOptionalString(uuid);
+        }
     }
 
     @Override
@@ -514,5 +529,9 @@ public class BulkRequest extends ActionRequest implements CompositeIndicesReques
 
     public Set<String> getIndices() {
         return Collections.unmodifiableSet(indices);
+    }
+
+    public String getUuid() {
+        return uuid;
     }
 }

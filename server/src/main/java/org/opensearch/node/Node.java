@@ -971,7 +971,8 @@ public class Node implements Closeable {
                 analysisModule.getAnalysisRegistry(),
                 pluginsService.filterPlugins(IngestPlugin.class),
                 client,
-                indicesService
+                indicesService,
+                xContentRegistry
             );
 
             final AliasValidator aliasValidator = new AliasValidator();

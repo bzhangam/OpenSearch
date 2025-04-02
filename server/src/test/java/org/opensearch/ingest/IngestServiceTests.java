@@ -63,6 +63,7 @@ import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.common.xcontent.cbor.CborXContent;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
+import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.VersionType;
@@ -164,7 +165,8 @@ public class IngestServiceTests extends OpenSearchTestCase {
             null,
             Collections.singletonList(DUMMY_PLUGIN),
             client,
-            mock(IndicesService.class)
+            mock(IndicesService.class),
+            mock(NamedXContentRegistry.class)
         );
         Map<String, Processor.Factory> factories = ingestService.getProcessorFactories();
         assertTrue(factories.containsKey("foo"));
@@ -183,7 +185,8 @@ public class IngestServiceTests extends OpenSearchTestCase {
                 null,
                 Arrays.asList(DUMMY_PLUGIN, DUMMY_PLUGIN),
                 client,
-                mock(IndicesService.class)
+                mock(IndicesService.class),
+                mock(NamedXContentRegistry.class)
             )
         );
         assertTrue(e.getMessage(), e.getMessage().contains("already registered"));
@@ -203,7 +206,8 @@ public class IngestServiceTests extends OpenSearchTestCase {
             null,
             Collections.singletonList(DUMMY_PLUGIN),
             client,
-            mock(IndicesService.class)
+            mock(IndicesService.class),
+            mock(NamedXContentRegistry.class)
         );
         final IndexRequest indexRequest = new IndexRequest("_index").id("_id")
             .source(emptyMap())
@@ -1645,7 +1649,8 @@ public class IngestServiceTests extends OpenSearchTestCase {
             null,
             Arrays.asList(testPlugin),
             client,
-            mock(IndicesService.class)
+            mock(IndicesService.class),
+            mock(NamedXContentRegistry.class)
         );
         ingestService.addIngestClusterStateListener(ingestClusterStateListener);
 
@@ -1707,6 +1712,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
     }
 
     public void testResolveRequiredOrDefaultPipelineDefaultPipeline() {
+        IngestService ingestService = createWithProcessors();
         IndexMetadata.Builder builder = IndexMetadata.builder("idx")
             .settings(settings(Version.CURRENT).put(IndexSettings.DEFAULT_PIPELINE.getKey(), "default-pipeline"))
             .numberOfShards(1)
@@ -1716,14 +1722,14 @@ public class IngestServiceTests extends OpenSearchTestCase {
 
         // index name matches with IDM:
         IndexRequest indexRequest = new IndexRequest("idx");
-        boolean result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+        boolean result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
         assertThat(result, is(true));
         assertThat(indexRequest.isPipelineResolved(), is(true));
         assertThat(indexRequest.getPipeline(), equalTo("default-pipeline"));
 
         // alias name matches with IDM:
         indexRequest = new IndexRequest("alias");
-        result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+        result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
         assertThat(result, is(true));
         assertThat(indexRequest.isPipelineResolved(), is(true));
         assertThat(indexRequest.getPipeline(), equalTo("default-pipeline"));
@@ -1734,20 +1740,21 @@ public class IngestServiceTests extends OpenSearchTestCase {
             .settings(settings(Version.CURRENT).put(IndexSettings.DEFAULT_PIPELINE.getKey(), "default-pipeline"));
         metadata = Metadata.builder().put(templateBuilder).build();
         indexRequest = new IndexRequest("idx");
-        result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+        result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
         assertThat(result, is(true));
         assertThat(indexRequest.isPipelineResolved(), is(true));
         assertThat(indexRequest.getPipeline(), equalTo("default-pipeline"));
 
         // index name matches with ITMD for bulk upsert
         UpdateRequest updateRequest = new UpdateRequest("idx", "id1").upsert(emptyMap()).script(mockScript("1"));
-        result = IngestService.resolvePipelines(updateRequest, TransportBulkAction.getIndexWriteRequest(updateRequest), metadata);
+        result = ingestService.resolvePipelines(updateRequest, TransportBulkAction.getIndexWriteRequest(updateRequest), metadata);
         assertThat(result, is(true));
         assertThat(updateRequest.upsertRequest().isPipelineResolved(), is(true));
         assertThat(updateRequest.upsertRequest().getPipeline(), equalTo("default-pipeline"));
     }
 
     public void testResolveFinalPipeline() {
+        IngestService ingestService = createWithProcessors();
         IndexMetadata.Builder builder = IndexMetadata.builder("idx")
             .settings(settings(Version.CURRENT).put(IndexSettings.FINAL_PIPELINE.getKey(), "final-pipeline"))
             .numberOfShards(1)
@@ -1757,7 +1764,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
 
         // index name matches with IDM:
         IndexRequest indexRequest = new IndexRequest("idx");
-        boolean result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+        boolean result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
         assertThat(result, is(true));
         assertThat(indexRequest.isPipelineResolved(), is(true));
         assertThat(indexRequest.getPipeline(), equalTo("_none"));
@@ -1765,7 +1772,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
 
         // alias name matches with IDM:
         indexRequest = new IndexRequest("alias");
-        result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+        result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
         assertThat(result, is(true));
         assertThat(indexRequest.isPipelineResolved(), is(true));
         assertThat(indexRequest.getPipeline(), equalTo("_none"));
@@ -1777,7 +1784,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
             .settings(settings(Version.CURRENT).put(IndexSettings.FINAL_PIPELINE.getKey(), "final-pipeline"));
         metadata = Metadata.builder().put(templateBuilder).build();
         indexRequest = new IndexRequest("idx");
-        result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+        result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
         assertThat(result, is(true));
         assertThat(indexRequest.isPipelineResolved(), is(true));
         assertThat(indexRequest.getPipeline(), equalTo("_none"));
@@ -1785,18 +1792,19 @@ public class IngestServiceTests extends OpenSearchTestCase {
 
         // index name matches with ITMD for bulk upsert:
         UpdateRequest updateRequest = new UpdateRequest("idx", "id1").upsert(emptyMap()).script(mockScript("1"));
-        result = IngestService.resolvePipelines(updateRequest, TransportBulkAction.getIndexWriteRequest(updateRequest), metadata);
+        result = ingestService.resolvePipelines(updateRequest, TransportBulkAction.getIndexWriteRequest(updateRequest), metadata);
         assertThat(result, is(true));
         assertThat(updateRequest.upsertRequest().isPipelineResolved(), is(true));
         assertThat(updateRequest.upsertRequest().getFinalPipeline(), equalTo("final-pipeline"));
     }
 
     public void testResolveRequestOrDefaultPipelineAndFinalPipeline() {
+        IngestService ingestService = createWithProcessors();
         // no pipeline:
         {
             Metadata metadata = Metadata.builder().build();
             IndexRequest indexRequest = new IndexRequest("idx");
-            boolean result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+            boolean result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
             assertThat(result, is(false));
             assertThat(indexRequest.isPipelineResolved(), is(true));
             assertThat(indexRequest.getPipeline(), equalTo(IngestService.NOOP_PIPELINE_NAME));
@@ -1806,7 +1814,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
         {
             Metadata metadata = Metadata.builder().build();
             IndexRequest indexRequest = new IndexRequest("idx").setPipeline("request-pipeline");
-            boolean result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+            boolean result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
             assertThat(result, is(true));
             assertThat(indexRequest.isPipelineResolved(), is(true));
             assertThat(indexRequest.getPipeline(), equalTo("request-pipeline"));
@@ -1820,7 +1828,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
                 .numberOfReplicas(0);
             Metadata metadata = Metadata.builder().put(builder).build();
             IndexRequest indexRequest = new IndexRequest("idx").setPipeline("request-pipeline");
-            boolean result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+            boolean result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
             assertThat(result, is(true));
             assertThat(indexRequest.isPipelineResolved(), is(true));
             assertThat(indexRequest.getPipeline(), equalTo("request-pipeline"));
@@ -1834,7 +1842,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
                 .numberOfReplicas(0);
             Metadata metadata = Metadata.builder().put(builder).build();
             IndexRequest indexRequest = new IndexRequest("idx").setPipeline("request-pipeline");
-            boolean result = IngestService.resolvePipelines(indexRequest, indexRequest, metadata);
+            boolean result = ingestService.resolvePipelines(indexRequest, indexRequest, metadata);
             assertThat(result, is(true));
             assertThat(indexRequest.isPipelineResolved(), is(true));
             assertThat(indexRequest.getPipeline(), equalTo("request-pipeline"));
@@ -2203,7 +2211,8 @@ public class IngestServiceTests extends OpenSearchTestCase {
 
     private IngestService.IndexRequestWrapper createIndexRequestWrapper(String index, List<String> pipelines) {
         IndexRequest indexRequest = new IndexRequest(index);
-        return new IngestService.IndexRequestWrapper(0, indexRequest, pipelines, true);
+        DocWriteRequest<?> actionRequest = new IndexRequest(index);
+        return new IngestService.IndexRequestWrapper(0, indexRequest, pipelines, true, actionRequest, null);
     }
 
     private IngestDocument eqIndexTypeId(final Map<String, Object> source) {
@@ -2245,7 +2254,7 @@ public class IngestServiceTests extends OpenSearchTestCase {
             public Map<String, Processor.Factory> getProcessors(final Processor.Parameters parameters) {
                 return processors;
             }
-        }), client, mock(IndicesService.class));
+        }), client, mock(IndicesService.class), mock(NamedXContentRegistry.class));
     }
 
     private CompoundProcessor mockCompoundProcessor() {

@@ -39,6 +39,7 @@ import org.opensearch.action.index.IndexRequest;
 import org.opensearch.action.support.WriteRequest.RefreshPolicy;
 import org.opensearch.action.update.UpdateRequest;
 import org.opensearch.common.io.stream.BytesStreamOutput;
+import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.core.common.ParsingException;
@@ -422,5 +423,14 @@ public class BulkRequestTests extends OpenSearchTestCase {
             MediaTypeRegistry.JSON
         );
         assertEquals(3, bulkRequestWithNewLine.numberOfActions());
+    }
+
+    public void testSimpleBulkWithIndexPipelineEnabled() throws Exception {
+        System.setProperty(FeatureFlags.INDEX_BASED_INGEST_PIPELINE, Boolean.toString(true));
+
+        BulkRequest bulkRequest = new BulkRequest();
+        assertNotNull(bulkRequest.getUuid());
+
+        System.clearProperty(FeatureFlags.INDEX_BASED_INGEST_PIPELINE);
     }
 }

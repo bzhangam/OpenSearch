@@ -69,6 +69,7 @@ import org.opensearch.common.ValidationException;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.lease.Releasable;
 import org.opensearch.common.unit.TimeValue;
+import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.common.util.concurrent.AtomicArray;
 import org.opensearch.core.Assertions;
 import org.opensearch.core.action.ActionListener;
@@ -250,8 +251,11 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
         for (DocWriteRequest<?> actionRequest : bulkRequest.requests) {
             IndexRequest indexRequest = getIndexWriteRequest(actionRequest);
             if (indexRequest != null) {
+                if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
+                    indexRequest.setBulkUuid(bulkRequest.getUuid());
+                }
                 // Each index request needs to be evaluated, because this method also modifies the IndexRequest
-                boolean indexRequestHasPipeline = IngestService.resolvePipelines(actionRequest, indexRequest, metadata);
+                boolean indexRequestHasPipeline = ingestService.resolvePipelines(actionRequest, indexRequest, metadata);
                 hasIndexRequestsWithPipelines |= indexRequestHasPipeline;
             }
 

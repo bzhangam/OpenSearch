@@ -2274,7 +2274,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                             new AnalysisModule(environment, Collections.emptyList()).getAnalysisRegistry(),
                             Collections.emptyList(),
                             client,
-                            indicesService
+                            indicesService,
+                            namedXContentRegistry
                         ),
                         transportShardBulkAction,
                         client,
