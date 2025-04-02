@@ -130,7 +130,7 @@ public class FeatureFlags {
     public static final String INDEX_BASED_INGEST_PIPELINE = "opensearch.experimental.feature.index_based_ingest_pipeline.enabled";
     public static final Setting<Boolean> INDEX_BASED_INGEST_PIPELINE_SETTING = Setting.boolSetting(
         INDEX_BASED_INGEST_PIPELINE,
-        false,
+        true,
         Property.NodeScope
     );
 

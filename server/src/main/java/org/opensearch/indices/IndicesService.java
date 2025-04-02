@@ -47,6 +47,7 @@ import org.opensearch.action.admin.indices.stats.CommonStatsFlags;
 import org.opensearch.action.admin.indices.stats.CommonStatsFlags.Flag;
 import org.opensearch.action.admin.indices.stats.IndexShardStats;
 import org.opensearch.action.admin.indices.stats.ShardStats;
+import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchRequestStats;
 import org.opensearch.action.search.SearchType;
 import org.opensearch.cluster.ClusterState;
@@ -125,6 +126,7 @@ import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.merge.MergeStats;
 import org.opensearch.index.query.BaseQueryRewriteContext;
 import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.index.query.QueryCoordinatorContext;
 import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.recovery.RecoveryStats;
 import org.opensearch.index.refresh.RefreshStats;
@@ -166,6 +168,7 @@ import org.opensearch.search.aggregations.support.ValuesSourceRegistry;
 import org.opensearch.search.internal.AliasFilter;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.internal.ShardSearchRequest;
+import org.opensearch.search.pipeline.PipelinedRequest;
 import org.opensearch.search.query.QueryPhase;
 import org.opensearch.search.query.QuerySearchResult;
 import org.opensearch.threadpool.ThreadPool;
@@ -1964,6 +1967,21 @@ public class IndicesService extends AbstractLifecycleComponent
      */
     public QueryRewriteContext getRewriteContext(LongSupplier nowInMillis) {
         return getRewriteContext(nowInMillis, false);
+    }
+
+    /**
+     * Returns a new {@link QueryRewriteContext} with the given {@code now} provider
+     */
+    public List<IndexService> getTargetIndexServiceList(SearchRequest searchRequest) {
+        Index[] targetIndices = indexNameExpressionResolver.concreteIndices(clusterService().state(), searchRequest);
+        List<IndexService> targetIndicesList = new ArrayList<>();
+        for (Index index : targetIndices) {
+            IndexService indexService = indexServiceSafe(index);
+            if(indexService != null){
+                targetIndicesList.add(indexService);
+            }
+        }
+        return targetIndicesList;
     }
 
     /**
