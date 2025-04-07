@@ -37,6 +37,7 @@ import org.opensearch.common.Nullable;
 import org.opensearch.common.metrics.OperationMetrics;
 import org.opensearch.script.ScriptService;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -45,6 +46,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+
+import reactor.util.annotation.NonNull;
 
 /**
  * A pipeline is a list of {@link Processor} instances grouped under a unique id.
@@ -120,6 +123,44 @@ public final class Pipeline {
             Collections.unmodifiableList(onFailureProcessors)
         );
         return new Pipeline(id, description, version, compoundProcessor);
+    }
+
+    public static Pipeline createIndexBasedIngestPipeline(
+        @NonNull final String index,
+        @NonNull final Map<String, Processor.Factory> indexBasedIngestProcessorFactories,
+        @NonNull final Map<String, Object> config
+    ) {
+        final String id = index + "_index_based_ingest_pipeline";
+        final String description = "This is an in-memory systematically generated ingest pipeline based on index configuration.";
+        final List<Processor> processors = new ArrayList<>();
+        // This config is based on the index and will be used by all the factories. Each factory should not modify it so
+        // make it an unmodifiable map.
+        final Map<String, Object> processorConfig = Collections.unmodifiableMap(config);
+        // if no config we create an empty pipeline with no processor.
+        if (config.isEmpty()) {
+            return new Pipeline(id, description, null, new CompoundProcessor());
+        }
+
+        indexBasedIngestProcessorFactories.values().forEach((factory) -> {
+            try {
+                final Processor processor = factory.create(indexBasedIngestProcessorFactories, null, null, processorConfig);
+                if (processor != null) {
+                    processors.add(processor);
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(
+                    "Failed to create the indexed based ingest processor from the factory "
+                        + factory.getClass().getName()
+                        + " for the index "
+                        + index
+                        + ". "
+                        + e.getMessage(),
+                    e
+                );
+            }
+        });
+
+        return new Pipeline(id, description, null, new CompoundProcessor(false, processors, Collections.emptyList()));
     }
 
     /**
@@ -225,5 +266,29 @@ public final class Pipeline {
             metrics.failedN(failedCount);
             handler.accept(results);
         });
+    }
+
+    /**
+     * Create a new pipeline based on current one. And append the processors of the pipeline to merge to it.
+     * If the pipeline to merge with is null then we simply return the current one.
+     *
+     * @param pipeline pipeline to merge with the current one
+     * @return A new pipeline with merged processors
+     */
+    public Pipeline merge(final Pipeline pipeline) {
+        if (pipeline == null) {
+            return this;
+        }
+        final List<Processor> processors = new ArrayList<>(getProcessors());
+        processors.addAll(pipeline.getProcessors());
+        final List<Processor> onFailureProcessors = new ArrayList<>(getOnFailureProcessors());
+        onFailureProcessors.addAll(pipeline.getOnFailureProcessors());
+
+        final CompoundProcessor compoundProcessor = new CompoundProcessor(
+            false,
+            Collections.unmodifiableList(processors),
+            Collections.unmodifiableList(onFailureProcessors)
+        );
+        return new Pipeline(id, description, version, compoundProcessor);
     }
 }

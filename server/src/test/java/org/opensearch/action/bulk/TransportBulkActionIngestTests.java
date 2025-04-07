@@ -92,6 +92,7 @@ import java.util.function.BiConsumer;
 import org.mockito.ArgumentCaptor;
 
 import static java.util.Collections.emptyMap;
+import static org.opensearch.ingest.IngestServiceTests.createIngestServiceWithProcessors;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.mockito.Answers.RETURNS_MOCKS;
@@ -99,12 +100,16 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 public class TransportBulkActionIngestTests extends OpenSearchTestCase {
@@ -287,7 +292,8 @@ public class TransportBulkActionIngestTests extends OpenSearchTestCase {
             return null;
         }).when(clusterService).addStateApplier(any(ClusterStateApplier.class));
         // setup the mocked ingest service for capturing calls
-        ingestService = mock(IngestService.class);
+        ingestService = spy(createIngestServiceWithProcessors(Collections.emptyMap()));
+        doNothing().when(ingestService).executeBulkRequest(anyInt(), any(), any(), any(), any(), anyString(), any());
         action = new TestTransportBulkAction();
         singleItemBulkWriteAction = new TestSingleItemBulkWriteAction(action);
         reset(transportService); // call on construction of action
@@ -300,7 +306,8 @@ public class TransportBulkActionIngestTests extends OpenSearchTestCase {
         bulkRequest.add(indexRequest);
         action.execute(null, bulkRequest, ActionListener.wrap(response -> {}, exception -> { throw new AssertionError(exception); }));
         assertTrue(action.isExecuted);
-        verifyNoInteractions(ingestService);
+        verify(ingestService, times(1)).resolvePipelines(any(), any(), any());
+        verifyNoMoreInteractions(ingestService);
     }
 
     public void testSingleItemBulkActionIngestSkipped() throws Exception {
@@ -310,7 +317,8 @@ public class TransportBulkActionIngestTests extends OpenSearchTestCase {
             throw new AssertionError(exception);
         }));
         assertTrue(action.isExecuted);
-        verifyNoInteractions(ingestService);
+        verify(ingestService, times(1)).resolvePipelines(any(), any(), any());
+        verifyNoMoreInteractions(ingestService);
     }
 
     public void testIngestLocal() throws Exception {
@@ -660,8 +668,8 @@ public class TransportBulkActionIngestTests extends OpenSearchTestCase {
             failureCalled.set(true);
         }));
         assertEquals(IngestService.NOOP_PIPELINE_NAME, indexRequest.getPipeline());
-        verifyNoInteractions(ingestService);
-
+        verify(ingestService, times(1)).resolvePipelines(any(), any(), any());
+        verifyNoMoreInteractions(ingestService);
     }
 
     public void testFindDefaultPipelineFromTemplateMatch() {
