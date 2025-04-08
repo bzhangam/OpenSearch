@@ -2281,7 +2281,7 @@ public class IngestServiceTests extends OpenSearchSingleNodeTestCase {
     private IngestService.IndexRequestWrapper createIndexRequestWrapper(String index, List<String> pipelines) {
         IndexRequest indexRequest = new IndexRequest(index);
         DocWriteRequest<?> actionRequest = new IndexRequest(index);
-        return new IngestService.IndexRequestWrapper(0, indexRequest, pipelines, true, actionRequest, null);
+        return new IngestService.IndexRequestWrapper(0, indexRequest, pipelines, true, actionRequest, null, null);
     }
 
     private IngestDocument eqIndexTypeId(final Map<String, Object> source) {

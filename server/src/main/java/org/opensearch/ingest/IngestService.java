@@ -845,59 +845,39 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
             indexRequest.setPipeline(NOOP_PIPELINE_NAME);
             final String finalPipelineId = indexRequest.getFinalPipeline();
             indexRequest.setFinalPipeline(NOOP_PIPELINE_NAME);
-            boolean hasFinalPipeline = true;
-            final List<String> pipelines;
-            String ingestBasedPipelineId = null;
-            if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
-                ingestBasedPipelineId = indexRequest.getIndexBasedIngestPipeline();
+
+            List<PipelineInfo> pipelinesInfoList = new ArrayList<>();
+
+            if (IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false) {
+                pipelinesInfoList.add(new PipelineInfo(pipelineId, PipelineInfoType.DEFAULT));
+            }
+            if (IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false) {
+                pipelinesInfoList.add(new PipelineInfo(finalPipelineId, PipelineInfoType.FINAL));
+            }
+
+            if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)){
+                final String ingestBasedPipelineId = indexRequest.getIndexBasedIngestPipeline();
                 // We need to set it as NOOP so that when we finish the execution and fork back to the write thread we
                 // will not try to execute the pipeline again.
                 indexRequest.setIndexBasedIngestPipeline(NOOP_PIPELINE_NAME);
 
-                final List<String> tmp = new ArrayList<>();
-                hasFinalPipeline = false;
-
-                if (IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false) {
-                    tmp.add(pipelineId);
-                }
-                if (IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false) {
-                    tmp.add(finalPipelineId);
-                    hasFinalPipeline = true;
-                }
-                // We plan to leverage the final pipeline to execute the index based ingest pipeline since normal
-                // pipeline can change the target index and impact the index based ingest pipeline. If there is an
-                // existing final pipeline we will append the index based ingest processors to it otherwise we will
-                // execute it as a final pipeline.
-                // We don't execute it as a new pipeline to minimize the change to core, but it's something we can
-                // explore in the future. Executing it as a new pipeline type may simplify the code.
-                // Here if we only have the index based ingest pipeline we will treat it like a final pipeline.
-                if (IngestService.NOOP_PIPELINE_NAME.equals(ingestBasedPipelineId) == false && hasFinalPipeline == false) {
-                    tmp.add(ingestBasedPipelineId);
-                    hasFinalPipeline = true;
-                }
-                pipelines = Collections.unmodifiableList(tmp);
-            } else {
-                if (IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false
-                    && IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false) {
-                    pipelines = Arrays.asList(pipelineId, finalPipelineId);
-                } else if (IngestService.NOOP_PIPELINE_NAME.equals(pipelineId) == false) {
-                    pipelines = Collections.singletonList(pipelineId);
-                    hasFinalPipeline = false;
-                } else if (IngestService.NOOP_PIPELINE_NAME.equals(finalPipelineId) == false) {
-                    pipelines = Collections.singletonList(finalPipelineId);
-                } else {
-                    if (counter.decrementAndGet() == 0) {
-                        onCompletion.accept(originalThread, null);
-                    }
-                    assert counter.get() >= 0;
-                    i++;
-                    continue;
+                if (IngestService.NOOP_PIPELINE_NAME.equals(ingestBasedPipelineId) == false) {
+                    pipelinesInfoList.add(new PipelineInfo(ingestBasedPipelineId, PipelineInfoType.INDEX_BASED));
                 }
             }
-            indexRequestWrappers.add(
-                new IndexRequestWrapper(i, indexRequest, pipelines, hasFinalPipeline, actionRequest, ingestBasedPipelineId)
-            );
+
             i++;
+
+            if(pipelinesInfoList.isEmpty()) {
+                if (counter.decrementAndGet() == 0) {
+                    onCompletion.accept(originalThread, null);
+                }
+                assert counter.get() >= 0;
+            }else {
+                indexRequestWrappers.add(
+                    new IndexRequestWrapper(i, indexRequest, null, false, actionRequest, null, pipelinesInfoList)
+                );
+            }
         }
 
         int batchSize = Math.min(numberOfActionRequests, originalBulkRequest.batchSize());
@@ -907,11 +887,9 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         for (List<IndexRequestWrapper> batch : batches) {
             executePipelinesInBatchRequests(
                 batch.stream().map(IndexRequestWrapper::getSlot).collect(Collectors.toList()),
-                batch.get(0).getPipelines().iterator(),
-                batch.get(0).isHasFinalPipeline(),
+                batch.get(0).getPipelineInfoList().iterator(),
                 batch.stream().map(IndexRequestWrapper::getIndexRequest).collect(Collectors.toList()),
                 batch.stream().map(IndexRequestWrapper::getActionRequest).collect(Collectors.toList()),
-                batch.get(0).getIngestBasedPipelineId(),
                 onDropped,
                 onFailure,
                 counter,
@@ -939,7 +917,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
             // IndexRequests are grouped by their index + pipeline ids
             List<String> indexAndPipelineIds = new ArrayList<>();
             String index = indexRequestWrapper.getIndexRequest().index();
-            List<String> pipelines = indexRequestWrapper.getPipelines();
+            List<String> pipelines = indexRequestWrapper.getPipelineInfoList().stream().map(PipelineInfo::getPipelineId).toList();
             indexAndPipelineIds.add(index);
             indexAndPipelineIds.addAll(pipelines);
             int hashCode = indexAndPipelineIds.hashCode();
@@ -967,6 +945,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         private final boolean hasFinalPipeline;
         private final DocWriteRequest<?> actionRequest;
         private final String ingestBasedPipelineId;
+        private final List<PipelineInfo> pipelineInfoList;
 
         IndexRequestWrapper(
             int slot,
@@ -974,7 +953,8 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
             List<String> pipelines,
             boolean hasFinalPipeline,
             DocWriteRequest<?> actionRequest,
-            String ingestBasedPipelineId
+            String ingestBasedPipelineId,
+            List<PipelineInfo> pipelineInfoList
         ) {
             this.slot = slot;
             this.indexRequest = indexRequest;
@@ -982,6 +962,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
             this.hasFinalPipeline = hasFinalPipeline;
             this.actionRequest = actionRequest;
             this.ingestBasedPipelineId = ingestBasedPipelineId;
+            this.pipelineInfoList = pipelineInfoList;
         }
 
         public int getSlot() {
@@ -1007,15 +988,41 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         public String getIngestBasedPipelineId() {
             return ingestBasedPipelineId;
         }
+
+        public List<PipelineInfo> getPipelineInfoList() {
+            return pipelineInfoList;
+        }
+    }
+
+    class PipelineInfo{
+        private final String pipelineId;
+        private final PipelineInfoType type;
+
+        PipelineInfo(String pipelineId, PipelineInfoType type) {
+            this.pipelineId = pipelineId;
+            this.type = type;
+        }
+
+        public String getPipelineId() {
+            return pipelineId;
+        }
+
+        public PipelineInfoType getType() {
+            return type;
+        }
+    }
+
+    enum PipelineInfoType{
+        DEFAULT,
+        FINAL,
+        INDEX_BASED
     }
 
     private void executePipelinesInBatchRequests(
         final List<Integer> slots,
-        final Iterator<String> pipelineIterator,
-        final boolean hasFinalPipeline,
+        final Iterator<PipelineInfo> pipelineInfoIterator,
         final List<IndexRequest> indexRequests,
         final List<DocWriteRequest<?>> actionRequests,
-        final String indexPipelineId,
         final IntConsumer onDropped,
         final BiConsumer<Integer, Exception> onFailure,
         final AtomicInteger counter,
@@ -1025,11 +1032,9 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         if (indexRequests.size() == 1) {
             executePipelines(
                 slots.get(0),
-                pipelineIterator,
-                hasFinalPipeline,
+                pipelineInfoIterator,
                 indexRequests.get(0),
                 actionRequests.get(0),
-                indexPipelineId,
                 onDropped,
                 onFailure,
                 counter,
@@ -1038,29 +1043,16 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
             );
             return;
         }
-        while (pipelineIterator.hasNext()) {
-            final String pipelineId = pipelineIterator.next();
+        while (pipelineInfoIterator.hasNext()) {
+            final PipelineInfo pipelineInfo = pipelineInfoIterator.next();
+            final String pipelineId = pipelineInfo.getPipelineId();
+            final PipelineInfoType pipelineInfoType = pipelineInfo.getType();
             try {
-                final Pipeline pipeline;
                 final PipelineHolder holder = pipelines.get(pipelineId);
-                if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
-                    pipeline = getPipelineWithIndexPipelineSupport(
-                        hasFinalPipeline,
-                        indexPipelineId,
-                        pipelineIterator,
-                        indexRequests.get(0),
-                        holder,
-                        pipelineId,
-                        actionRequests.get(0),
-                        counter,
-                        onCompletion,
-                        originalThread
-                    );
-                    if (pipeline == null) {
-                        return;
-                    }
-                } else {
-                    pipeline = getPipelineFromHolder(holder, pipelineId);
+                final Pipeline pipeline = getPipeline(pipelineId, pipelineInfoType, actionRequests.get(0), indexRequests.get(0), holder, counter, onCompletion, originalThread);
+
+                if(pipeline == null) {
+                    return;
                 }
 
                 String originalIndex = indexRequests.get(0).indices()[0];
@@ -1082,70 +1074,68 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                         }
                     }
 
-                    Iterator<String> newPipelineIterator = pipelineIterator;
-                    boolean newHasFinalPipeline = hasFinalPipeline;
-                    // indexRequests are grouped for the same index and same pipelines
-                    String newIndex = indexRequests.get(0).indices()[0];
 
-                    // handle index change case
-                    if (Objects.equals(originalIndex, newIndex) == false) {
-                        if (hasFinalPipeline && pipelineIterator.hasNext() == false) {
-                            totalMetrics.failed();
-                            for (int slot : slots) {
-                                onFailure.accept(
-                                    slot,
-                                    new IllegalStateException("final pipeline [" + pipelineId + "] can't change the target index")
-                                );
-                            }
-                        } else {
-                            // Drain old it so it's not looped over
-                            pipelineIterator.forEachRemaining($ -> {});
-                            for (IndexRequest indexRequest : indexRequests) {
-                                indexRequest.isPipelineResolved(false);
-                                resolvePipelines(null, indexRequest, state.metadata());
-
-                                if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
-                                    final List<String> newPipelines = new ArrayList<>();
-
-                                    if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false) {
-                                        newPipelines.add(indexRequest.getFinalPipeline());
-                                        newHasFinalPipeline = true;
-                                    }
-
-                                    if (newHasFinalPipeline == false
-                                        && IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getIndexBasedIngestPipeline()) == false) {
-                                        newPipelines.add(indexRequest.getIndexBasedIngestPipeline());
-                                        newHasFinalPipeline = true;
-                                    }
-
-                                    newPipelineIterator = Collections.unmodifiableList(newPipelines).iterator();
-                                } else {
-                                    if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false) {
-                                        newPipelineIterator = Collections.singleton(indexRequest.getFinalPipeline()).iterator();
-                                        newHasFinalPipeline = true;
-                                    } else {
-                                        newPipelineIterator = Collections.emptyIterator();
-                                    }
-                                }
-                            }
-                        }
+                    // indexRequests are grouped for the same index and same pipelines but we can conditionally change
+                    // the target index so need to check each request
+                    boolean hasTargetIndexChanged = false;
+                    boolean hasInvalidTargetIndexChange = false;
+                    List<IndexRequest> indexRequestsTargetIndexUnchanged = new ArrayList<>();
+                    List<DocWriteRequest<?>> actionRequestsTargetIndexUnchanged = new ArrayList<>();
+                    for (int i = 0; i < indexRequests.size(); ++i) {
+                        final IndexRequest indexRequest = indexRequests.get(i);
+                       if(Objects.equals(originalIndex, indexRequest.indices()[0]) == false){
+                           hasTargetIndexChanged = true;
+                           if (PipelineInfoType.FINAL.equals(pipelineInfoType) || PipelineInfoType.INDEX_BASED.equals(pipelineInfoType)) {
+                               // invalid target index change we fail the doc
+                               hasInvalidTargetIndexChange = true;
+                               onFailure.accept(
+                                   i,
+                                   new IllegalStateException(pipelineInfoType + " pipeline [" + pipelineId + "] can't change the target index")
+                               );
+                           }else {
+                               // valid target index change we reset the pipeline for the request and let
+                               // TransportBulkAction re-process it.
+                               indexRequest.isPipelineResolved(false);
+                               indexRequest.setPipeline(null);
+                               indexRequest.setFinalPipeline(null);
+                               indexRequest.setIndexBasedIngestPipeline(null);
+                           }
+                       }else {
+                           indexRequestsTargetIndexUnchanged.add(indexRequest);
+                           actionRequestsTargetIndexUnchanged.add(actionRequests.get(i));
+                       }
                     }
 
-                    if (newPipelineIterator.hasNext()) {
+                    // handle index change case
+                    if (hasTargetIndexChanged == true) {
+                        if(hasInvalidTargetIndexChange == false) {
+                            totalMetrics.failed();
+                        }
+                        if(indexRequestsTargetIndexUnchanged.isEmpty()) {
+                            // Drain old it so it's not looped over. We will re-process the pipelines of the request with
+                            // the new target index in TransportBulkAction.
+                            pipelineInfoIterator.forEachRemaining($ -> {});
+                        }
+
+                        if (counter.addAndGet(-(indexRequests.size() - indexRequestsTargetIndexUnchanged.size())) == 0) {
+                            onCompletion.accept(originalThread, null);
+                        }
+                        assert counter.get() >= 0;
+                    }
+
+                    if(pipelineInfoIterator.hasNext()){
                         executePipelinesInBatchRequests(
                             slots,
-                            newPipelineIterator,
-                            newHasFinalPipeline,
-                            indexRequests,
-                            actionRequests,
-                            indexRequests.get(0).getIndexBasedIngestPipeline(),
+                            pipelineInfoIterator,
+                            indexRequestsTargetIndexUnchanged,
+                            actionRequestsTargetIndexUnchanged,
                             onDropped,
                             onFailure,
                             counter,
                             onCompletion,
                             originalThread
                         );
-                    } else {
+                    }else {
                         if (counter.addAndGet(-results.size()) == 0) {
                             onCompletion.accept(originalThread, null);
                         }
@@ -1183,11 +1173,9 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
 
     private void executePipelines(
         final int slot,
-        final Iterator<String> it,
-        final boolean hasFinalPipeline,
+        final Iterator<PipelineInfo> it,
         final IndexRequest indexRequest,
         final DocWriteRequest<?> actionRequest,
-        final String indexPipelineId,
         final IntConsumer onDropped,
         final BiConsumer<Integer, Exception> onFailure,
         final AtomicInteger counter,
@@ -1195,28 +1183,16 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         final Thread originalThread
     ) {
         while (it.hasNext()) {
-            final String pipelineId = it.next();
+            final PipelineInfo pipelineInfo = it.next();
+            final String pipelineId = pipelineInfo.getPipelineId();
             try {
-                final Pipeline pipeline;
+                final PipelineInfoType pipelineType = pipelineInfo.getType();
+
                 final PipelineHolder holder = pipelines.get(pipelineId);
-                if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
-                    pipeline = getPipelineWithIndexPipelineSupport(
-                        hasFinalPipeline,
-                        indexPipelineId,
-                        it,
-                        indexRequest,
-                        holder,
-                        pipelineId,
-                        actionRequest,
-                        counter,
-                        onCompletion,
-                        originalThread
-                    );
-                    if (pipeline == null) {
-                        return;
-                    }
-                } else {
-                    pipeline = getPipelineFromHolder(holder, pipelineId);
+                final Pipeline pipeline = getPipeline(pipelineId, pipelineType, actionRequest, indexRequest, holder, counter, onCompletion, originalThread);
+
+                if(pipeline == null) {
+                    return;
                 }
 
                 String originalIndex = indexRequest.indices()[0];
@@ -1234,60 +1210,41 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                         onFailure.accept(slot, e);
                     }
 
-                    Iterator<String> newIt = it;
-                    boolean newHasFinalPipeline = hasFinalPipeline;
+
                     String newIndex = indexRequest.indices()[0];
 
                     if (Objects.equals(originalIndex, newIndex) == false) {
-                        if (hasFinalPipeline && it.hasNext() == false) {
+                        if (PipelineInfoType.FINAL.equals(pipelineType) || PipelineInfoType.INDEX_BASED.equals(pipelineType)) {
                             totalMetrics.failed();
                             onFailure.accept(
                                 slot,
-                                new IllegalStateException("final pipeline [" + pipelineId + "] can't change the target index")
+                                new IllegalStateException(pipelineType + " pipeline [" + pipelineId + "] can't change the target index")
                             );
                         } else {
-
-                            // Drain old it so it's not looped over
-                            it.forEachRemaining($ -> {});
                             indexRequest.isPipelineResolved(false);
-                            resolvePipelines(null, indexRequest, state.metadata());
-
-                            if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
-                                if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false) {
-                                    newIt = Collections.singleton(indexRequest.getFinalPipeline()).iterator();
-                                    newHasFinalPipeline = true;
-                                }
-                                if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getIndexBasedIngestPipeline()) == false
-                                    && newHasFinalPipeline == false) {
-                                    newIt = Collections.singleton(indexRequest.getIndexBasedIngestPipeline()).iterator();
-                                    newHasFinalPipeline = true;
-                                }
-                            } else {
-                                if (IngestService.NOOP_PIPELINE_NAME.equals(indexRequest.getFinalPipeline()) == false) {
-                                    newIt = Collections.singleton(indexRequest.getFinalPipeline()).iterator();
-                                    newHasFinalPipeline = true;
-                                } else {
-                                    newIt = Collections.emptyIterator();
-                                }
-                            }
+                            indexRequest.setPipeline(null);
+                            indexRequest.setFinalPipeline(null);
+                            indexRequest.setIndexBasedIngestPipeline(null);
                         }
+
+                        // Drain old it so it's not looped over. We will re-process the pipelines of the request with
+                        // the new target index in TransportBulkAction.
+                        it.forEachRemaining($ -> {});
                     }
 
-                    if (newIt.hasNext()) {
+                    if(it.hasNext()) {
                         executePipelines(
                             slot,
-                            newIt,
-                            newHasFinalPipeline,
+                            it,
                             indexRequest,
                             actionRequest,
-                            indexRequest.getIndexBasedIngestPipeline(),
                             onDropped,
                             onFailure,
                             counter,
                             onCompletion,
                             originalThread
                         );
-                    } else {
+                    }else {
                         if (counter.decrementAndGet() == 0) {
                             onCompletion.accept(originalThread, null);
                         }
@@ -1313,6 +1270,38 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
             }
         }
     }
+
+    private Pipeline getPipeline(String pipelineId, PipelineInfoType pipelineType, DocWriteRequest<?> actionRequest, IndexRequest indexRequest, PipelineHolder holder, AtomicInteger counter, BiConsumer<Thread, Exception> onCompletion, Thread originalThread) {
+        if (FeatureFlags.isEnabled(FeatureFlags.INDEX_BASED_INGEST_PIPELINE)) {
+            if(PipelineInfoType.INDEX_BASED.equals(pipelineType)) {
+                Pipeline indexPipeline = indexBasedIngestPipelineCache.getIndexBasedIngestPipeline(pipelineId);
+                // In very edge case it is possible the cache is invalidated after we resolve the
+                // pipeline. So try to resolve the index based ingest pipeline again here.
+                if (indexPipeline == null) {
+                    resolveIndexBasedIngestPipeline(actionRequest, indexRequest, state.metadata());
+                    final String newPipelineId = indexRequest.getIndexBasedIngestPipeline();
+                    // set it as NOOP to avoid duplicated execution after we switch back to the write thread
+                    indexRequest.setIndexBasedIngestPipeline(NOOP_PIPELINE_NAME);
+                    indexPipeline = indexBasedIngestPipelineCache.getIndexBasedIngestPipeline(newPipelineId);
+                }
+
+                // After retry, if we still can't find the pipeline, terminate if it's no longer needed
+                if (indexPipeline == null) {
+                    // If we simply have the index based pipeline as the final pipeline, and now it's no longer
+                    // needed we should complete the execution.
+                    completeExecution(counter, onCompletion, originalThread);
+                    return null;
+                }
+
+                return indexPipeline;
+            }else {
+                return getPipelineFromHolder(holder, pipelineId);
+            }
+        } else {
+            return getPipelineFromHolder(holder, pipelineId);
+        }
+    }
+
 
     private Pipeline getPipelineWithIndexPipelineSupport(
         final boolean hasFinalPipeline,
