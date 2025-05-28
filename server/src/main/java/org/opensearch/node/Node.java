@@ -154,9 +154,12 @@ import org.opensearch.index.SegmentReplicationStatsTracker;
 import org.opensearch.index.analysis.AnalysisRegistry;
 import org.opensearch.index.compositeindex.CompositeIndexSettings;
 import org.opensearch.index.engine.EngineFactory;
+import org.opensearch.index.engine.MergedSegmentWarmerFactory;
+import org.opensearch.index.mapper.MappingTransformerRegistry;
 import org.opensearch.index.recovery.RemoteStoreRestoreService;
 import org.opensearch.index.remote.RemoteIndexPathUploader;
 import org.opensearch.index.remote.RemoteStoreStatsTrackerFactory;
+import org.opensearch.index.store.DefaultCompositeDirectoryFactory;
 import org.opensearch.index.store.IndexStoreListener;
 import org.opensearch.index.store.RemoteSegmentStoreDirectoryFactory;
 import org.opensearch.index.store.remote.filecache.FileCache;
@@ -182,6 +185,7 @@ import org.opensearch.indices.replication.SegmentReplicationTargetService;
 import org.opensearch.indices.replication.SegmentReplicator;
 import org.opensearch.indices.store.IndicesStore;
 import org.opensearch.ingest.IngestService;
+import org.opensearch.ingest.SystemIngestPipelineCache;
 import org.opensearch.monitor.MonitorService;
 import org.opensearch.monitor.fs.FsHealthService;
 import org.opensearch.monitor.fs.FsProbe;
@@ -213,6 +217,7 @@ import org.opensearch.plugins.MetadataUpgrader;
 import org.opensearch.plugins.NetworkPlugin;
 import org.opensearch.plugins.PersistentTaskPlugin;
 import org.opensearch.plugins.Plugin;
+import org.opensearch.plugins.PluginInfo;
 import org.opensearch.plugins.PluginsService;
 import org.opensearch.plugins.RepositoryPlugin;
 import org.opensearch.plugins.ScriptPlugin;
@@ -452,6 +457,7 @@ public class Node implements Closeable {
     private final AtomicReference<RunnableTaskExecutionListener> runnableTaskListener;
     private FileCache fileCache;
     private final RemoteStoreStatsTrackerFactory remoteStoreStatsTrackerFactory;
+    private final MergedSegmentWarmerFactory mergedSegmentWarmerFactory;
 
     public Node(Environment environment) {
         this(environment, Collections.emptyList(), true);
@@ -465,11 +471,7 @@ public class Node implements Closeable {
      * @param forbidPrivateIndexSettings whether or not private index settings are forbidden when creating an index; this is used in the
      *                                   test framework for tests that rely on being able to set private settings
      */
-    protected Node(
-        final Environment initialEnvironment,
-        Collection<Class<? extends Plugin>> classpathPlugins,
-        boolean forbidPrivateIndexSettings
-    ) {
+    protected Node(final Environment initialEnvironment, Collection<PluginInfo> classpathPlugins, boolean forbidPrivateIndexSettings) {
         final List<Closeable> resourcesToClose = new ArrayList<>(); // register everything we need to release in the case of an error
         boolean success = false;
         try {
@@ -765,7 +767,8 @@ public class Node implements Closeable {
                 clusterManagerMetrics
             );
             modules.add(clusterModule);
-            IndicesModule indicesModule = new IndicesModule(pluginsService.filterPlugins(MapperPlugin.class));
+            final List<MapperPlugin> mapperPlugins = pluginsService.filterPlugins(MapperPlugin.class);
+            IndicesModule indicesModule = new IndicesModule(mapperPlugins);
             modules.add(indicesModule);
 
             SearchModule searchModule = new SearchModule(settings, pluginsService.filterPlugins(SearchPlugin.class));
@@ -890,6 +893,22 @@ public class Node implements Closeable {
                 });
             directoryFactories.putAll(builtInDirectoryFactories);
 
+            final Map<String, IndexStorePlugin.CompositeDirectoryFactory> compositeDirectoryFactories = new HashMap<>();
+            pluginsService.filterPlugins(IndexStorePlugin.class)
+                .stream()
+                .map(IndexStorePlugin::getCompositeDirectoryFactories)
+                .flatMap(m -> m.entrySet().stream())
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue))
+                .forEach((k, v) -> {
+                    if (k.equals("default")) {
+                        throw new IllegalStateException(
+                            "registered composite index store type [" + k + "] conflicts with a built-in default type"
+                        );
+                    }
+                    compositeDirectoryFactories.put(k, v);
+                });
+            compositeDirectoryFactories.put("default", new DefaultCompositeDirectoryFactory());
+
             final Map<String, IndexStorePlugin.RecoveryStateFactory> recoveryStateFactories = pluginsService.filterPlugins(
                 IndexStorePlugin.class
             )
@@ -948,6 +967,7 @@ public class Node implements Closeable {
                 metaStateService,
                 engineFactoryProviders,
                 Map.copyOf(directoryFactories),
+                Map.copyOf(compositeDirectoryFactories),
                 searchModule.getValuesSourceRegistry(),
                 recoveryStateFactories,
                 remoteDirectoryFactory,
@@ -972,7 +992,9 @@ public class Node implements Closeable {
                 analysisModule.getAnalysisRegistry(),
                 pluginsService.filterPlugins(IngestPlugin.class),
                 client,
-                indicesService
+                indicesService,
+                xContentRegistry,
+                new SystemIngestPipelineCache()
             );
 
             final AliasValidator aliasValidator = new AliasValidator();
@@ -1454,6 +1476,10 @@ public class Node implements Closeable {
             resourcesToClose.add(persistentTasksClusterService);
             final PersistentTasksService persistentTasksService = new PersistentTasksService(clusterService, threadPool, client);
 
+            mergedSegmentWarmerFactory = new MergedSegmentWarmerFactory(transportService, recoverySettings, clusterService);
+
+            final MappingTransformerRegistry mappingTransformerRegistry = new MappingTransformerRegistry(mapperPlugins, xContentRegistry);
+
             modules.add(b -> {
                 b.bind(Node.class).toInstance(this);
                 b.bind(NodeService.class).toInstance(nodeService);
@@ -1555,6 +1581,8 @@ public class Node implements Closeable {
                 b.bind(SegmentReplicationStatsTracker.class).toInstance(segmentReplicationStatsTracker);
                 b.bind(SearchRequestOperationsCompositeListenerFactory.class).toInstance(searchRequestOperationsCompositeListenerFactory);
                 b.bind(SegmentReplicator.class).toInstance(segmentReplicator);
+                b.bind(MergedSegmentWarmerFactory.class).toInstance(mergedSegmentWarmerFactory);
+                b.bind(MappingTransformerRegistry.class).toInstance(mappingTransformerRegistry);
 
                 taskManagerClientOptional.ifPresent(value -> b.bind(TaskManagerClient.class).toInstance(value));
             });

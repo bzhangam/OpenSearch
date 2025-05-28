@@ -18,7 +18,6 @@ import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.cluster.routing.Preference;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.index.query.QueryBuilders;
 import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.remotestore.RemoteStoreBaseIntegTestCase;
@@ -39,11 +38,6 @@ import static org.hamcrest.core.IsEqual.equalTo;
 public class SearchOnlyReplicaIT extends RemoteStoreBaseIntegTestCase {
 
     private static final String TEST_INDEX = "test_index";
-
-    @Override
-    protected Settings featureFlagSettings() {
-        return Settings.builder().put(super.featureFlagSettings()).put(FeatureFlags.READER_WRITER_SPLIT_EXPERIMENTAL, Boolean.TRUE).build();
-    }
 
     private final String expectedFailureMessage = "To set index.number_of_search_replicas, index.replication.type must be set to SEGMENT";
 
@@ -158,10 +152,15 @@ public class SearchOnlyReplicaIT extends RemoteStoreBaseIntegTestCase {
         String searchNode = internalCluster().startSearchOnlyNode();
         ensureGreen(TEST_INDEX);
         // Restart Search Node
-        internalCluster().restartNode(searchNode);
-        // Ensure search shard is unassigned
-        ensureYellowAndNoInitializingShards(TEST_INDEX);
-        assertActiveSearchShards(0);
+        internalCluster().restartNode(searchNode, new InternalTestCluster.RestartCallback() {
+            @Override
+            public Settings onNodeStopped(String nodeName) throws Exception {
+                // Ensure search shard is unassigned
+                ensureYellowAndNoInitializingShards(TEST_INDEX);
+                assertActiveSearchShards(0);
+                return super.onNodeStopped(nodeName);
+            }
+        });
         // Ensure search shard is recovered
         ensureGreen(TEST_INDEX);
         assertActiveSearchShards(1);

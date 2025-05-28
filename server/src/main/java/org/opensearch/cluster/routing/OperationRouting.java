@@ -133,7 +133,6 @@ public class OperationRouting {
     private volatile boolean isStrictWeightedShardRouting;
     private volatile boolean ignoreWeightedRouting;
     private volatile boolean isStrictSearchOnlyShardRouting;
-    private final boolean isReaderWriterSplitEnabled;
 
     public OperationRouting(Settings settings, ClusterSettings clusterSettings) {
         // whether to ignore awareness attributes when routing requests
@@ -156,7 +155,6 @@ public class OperationRouting {
         clusterSettings.addSettingsUpdateConsumer(STRICT_WEIGHTED_SHARD_ROUTING_ENABLED, this::setStrictWeightedShardRouting);
         clusterSettings.addSettingsUpdateConsumer(IGNORE_WEIGHTED_SHARD_ROUTING, this::setIgnoreWeightedRouting);
         clusterSettings.addSettingsUpdateConsumer(STRICT_SEARCH_REPLICA_ROUTING_ENABLED, this::setStrictSearchOnlyShardRouting);
-        this.isReaderWriterSplitEnabled = FeatureFlags.READER_WRITER_SPLIT_EXPERIMENTAL_SETTING.get(settings);
     }
 
     void setUseAdaptiveReplicaSelection(boolean useAdaptiveReplicaSelection) {
@@ -271,17 +269,14 @@ public class OperationRouting {
             }
 
             if (FeatureFlags.isEnabled(FeatureFlags.WRITABLE_WARM_INDEX_EXPERIMENTAL_FLAG)
-                && IndexModule.DataLocalityType.PARTIAL.name()
-                    .equals(indexMetadataForShard.getSettings().get(IndexModule.INDEX_STORE_LOCALITY_SETTING.getKey()))
+                && indexMetadataForShard.getSettings().getAsBoolean(IndexModule.IS_WARM_INDEX_SETTING.getKey(), false)
                 && (preference == null || preference.isEmpty())) {
                 preference = Preference.PRIMARY_FIRST.type();
             }
 
-            if (isReaderWriterSplitEnabled) {
-                if (preference == null || preference.isEmpty()) {
-                    if (indexMetadataForShard.getNumberOfSearchOnlyReplicas() > 0 && isStrictSearchOnlyShardRouting) {
-                        preference = Preference.SEARCH_REPLICA.type();
-                    }
+            if (preference == null || preference.isEmpty()) {
+                if (indexMetadataForShard.getNumberOfSearchOnlyReplicas() > 0 && isStrictSearchOnlyShardRouting) {
+                    preference = Preference.SEARCH_REPLICA.type();
                 }
             }
 

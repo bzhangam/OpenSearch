@@ -749,14 +749,14 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
 
             @Override
             public void validate(final String value, final Map<Setting<?>, Object> settings) {
-                if (isRewindState(value)) {
-                    // Ensure the reset value setting is provided when rewinding.
+                if (isResetState(value)) {
+                    // Ensure the reset value setting is provided when resetting consumer position.
                     final String resetValue = (String) settings.get(INGESTION_SOURCE_POINTER_INIT_RESET_VALUE_SETTING);
                     if (resetValue == null || resetValue.isEmpty()) {
                         throw new IllegalArgumentException(
                             "Setting "
                                 + INGESTION_SOURCE_POINTER_INIT_RESET_VALUE_SETTING.getKey()
-                                + " should be set when REWIND_BY_OFFSET or REWIND_BY_TIMESTAMP"
+                                + " should be set when resetting consumer position"
                         );
                     }
                 }
@@ -765,12 +765,12 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
             private boolean isValidResetState(String value) {
                 return StreamPoller.ResetState.LATEST.name().equalsIgnoreCase(value)
                     || StreamPoller.ResetState.EARLIEST.name().equalsIgnoreCase(value)
-                    || isRewindState(value);
+                    || isResetState(value);
             }
 
-            private boolean isRewindState(String value) {
-                return StreamPoller.ResetState.REWIND_BY_OFFSET.name().equalsIgnoreCase(value)
-                    || StreamPoller.ResetState.REWIND_BY_TIMESTAMP.name().equalsIgnoreCase(value);
+            private boolean isResetState(String value) {
+                return StreamPoller.ResetState.RESET_BY_OFFSET.name().equalsIgnoreCase(value)
+                    || StreamPoller.ResetState.RESET_BY_TIMESTAMP.name().equalsIgnoreCase(value);
             }
 
             @Override
@@ -829,6 +829,31 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         0,
         Property.IndexScope,
         Property.Dynamic
+    );
+
+    /**
+     * Defines the number of processor threads that will write to the lucene index.
+     */
+    public static final String SETTING_INGESTION_SOURCE_NUM_PROCESSOR_THREADS = "index.ingestion_source.num_processor_threads";
+    public static final Setting<Integer> INGESTION_SOURCE_NUM_PROCESSOR_THREADS_SETTING = Setting.intSetting(
+        SETTING_INGESTION_SOURCE_NUM_PROCESSOR_THREADS,
+        1,
+        1,
+        Setting.Property.IndexScope,
+        Setting.Property.Final
+    );
+
+    /**
+     * Defines the internal blocking queue size that is used to decouple poller and processor in pull-based ingestion.
+     */
+    public static final String SETTING_INGESTION_SOURCE_INTERNAL_QUEUE_SIZE = "index.ingestion_source.internal_queue_size";
+    public static final Setting<Integer> INGESTION_SOURCE_INTERNAL_QUEUE_SIZE_SETTING = Setting.intSetting(
+        SETTING_INGESTION_SOURCE_INTERNAL_QUEUE_SIZE,
+        100,
+        1,
+        100000,
+        Property.IndexScope,
+        Setting.Property.Final
     );
 
     public static final Setting.AffixSetting<Object> INGESTION_SOURCE_PARAMS_SETTING = Setting.prefixKeySetting(
@@ -1073,11 +1098,16 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
             final Map<String, Object> ingestionSourceParams = INGESTION_SOURCE_PARAMS_SETTING.getAsMap(settings);
             final long maxPollSize = INGESTION_SOURCE_MAX_POLL_SIZE.get(settings);
             final int pollTimeout = INGESTION_SOURCE_POLL_TIMEOUT.get(settings);
+            final int numProcessorThreads = INGESTION_SOURCE_NUM_PROCESSOR_THREADS_SETTING.get(settings);
+            final int blockingQueueSize = INGESTION_SOURCE_INTERNAL_QUEUE_SIZE_SETTING.get(settings);
+
             return new IngestionSource.Builder(ingestionSourceType).setParams(ingestionSourceParams)
                 .setPointerInitReset(pointerInitReset)
                 .setErrorStrategy(errorStrategy)
                 .setMaxPollSize(maxPollSize)
                 .setPollTimeout(pollTimeout)
+                .setNumProcessorThreads(numProcessorThreads)
+                .setBlockingQueueSize(blockingQueueSize)
                 .build();
         }
         return null;

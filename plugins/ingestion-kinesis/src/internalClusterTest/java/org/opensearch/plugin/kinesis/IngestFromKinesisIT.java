@@ -96,8 +96,8 @@ public class IngestFromKinesisIT extends KinesisIngestionBaseIT {
             PollingIngestStats stats = client().admin().indices().prepareStats("test").get().getIndex("test").getShards()[0]
                 .getPollingIngestStats();
             assertNotNull(stats);
-            assertThat(stats.getMessageProcessorStats().getTotalProcessedCount(), is(2L));
-            assertThat(stats.getConsumerStats().getTotalPolledCount(), is(2L));
+            assertThat(stats.getMessageProcessorStats().totalProcessedCount(), is(2L));
+            assertThat(stats.getConsumerStats().totalPolledCount(), is(2L));
         });
     }
 
@@ -117,7 +117,7 @@ public class IngestFromKinesisIT extends KinesisIngestionBaseIT {
                 .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
                 .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0)
                 .put("ingestion_source.type", "kinesis")
-                .put("ingestion_source.pointer.init.reset", "rewind_by_offset")
+                .put("ingestion_source.pointer.init.reset", "reset_by_offset")
                 .put("ingestion_source.pointer.init.reset.value", sequenceNumber)
                 .put("ingestion_source.param.stream", "test")
                 .put("ingestion_source.param.region", localstack.getRegion())

@@ -21,16 +21,18 @@ This document contains a list of maintainers in this repo. See [opensearch-proje
 | Kunal Kotwani     | [kotwanikunal](https://github.com/kotwanikunal)         | Amazon      |
 | Varun Bansal      | [linuxpi](https://github.com/linuxpi)                   | Amazon      |
 | Marc Handalian    | [mch2](https://github.com/mch2)                         | Amazon      |
-| Michael Froh      | [msfroh](https://github.com/msfroh)                     | Amazon      |
+| Michael Froh      | [msfroh](https://github.com/msfroh)                     | Uber        |
 | Nick Knize        | [nknize](https://github.com/nknize)                     | Lucenia     |
 | Owais Kazi        | [owaiskazi19](https://github.com/owaiskazi19)           | Amazon      |
 | Pan Guixin        | [bugmakerrrrrr](https://github.com/bugmakerrrrrr)       | ByteDance   |
 | Peter Nied        | [peternied](https://github.com/peternied)               | Amazon      |
+| Rishabh Maurya    | [rishabhmaurya](https://github.com/rishabhmaurya)       | Amazon      |
 | Rishikesh Pasham  | [Rishikesh1159](https://github.com/Rishikesh1159)       | Amazon      |
 | Sachin Kale       | [sachinpkale](https://github.com/sachinpkale)           | Amazon      |
 | Sarat Vemulapalli | [saratvemulapalli](https://github.com/saratvemulapalli) | Amazon      |
 | Shweta Thareja    | [shwetathareja](https://github.com/shwetathareja)       | Amazon      |
 | Sorabh Hamirwasia | [sohami](https://github.com/sohami)                     | Amazon      |
+| Yupeng Fu         | [yupeng9](https://github.com/yupeng9)                   | Uber        |
 | Vacha Shah        | [VachaShah](https://github.com/VachaShah)               | Amazon      |
 
 ## Emeritus
