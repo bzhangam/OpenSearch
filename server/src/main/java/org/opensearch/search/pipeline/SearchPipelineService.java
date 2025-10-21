@@ -111,10 +111,14 @@ public class SearchPipelineService implements ClusterStateApplier, ReportingServ
     /**
      * Specify the system generated factory type to enable them so that we will try to evaluate if we should use
      * them to generate search processors for the search request. Or can use a wildcard * to enable all.
+     *
+     * Enabled certain factories by default for AOS. We do not use * because 1. Factory owner should evaluate if we
+     * should enable the factory by default. 2. Factory owner may need to refactor the corresponding integ tests
+     * once the factory is enabled by default.
      */
     public static final Setting<List<String>> ENABLED_SYSTEM_GENERATED_FACTORIES_SETTING = Setting.listSetting(
         "cluster.search.enabled_system_generated_factories",
-        List.of(),
+        List.of("mmr_over_sample_factory", "mmr_rerank_factory", "semantic-highlighter"),
         s -> s,
         Setting.Property.Dynamic,
         Setting.Property.NodeScope
