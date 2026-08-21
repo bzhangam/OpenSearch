@@ -595,6 +595,8 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 SearchService.LOW_LEVEL_CANCELLATION_SETTING,
                 SearchService.MAX_OPEN_SCROLL_CONTEXT,
                 SearchService.MAX_OPEN_PIT_CONTEXT,
+                org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration.MAX_LEAF_COUNT_SETTING,
+                org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration.MAX_DEPTH_SETTING,
                 SearchService.MAX_PIT_KEEPALIVE_SETTING,
                 SearchService.MAX_AGGREGATION_REWRITE_FILTERS,
                 SearchService.AGGREGATION_REWRITE_FILTER_SEGMENT_THRESHOLD,

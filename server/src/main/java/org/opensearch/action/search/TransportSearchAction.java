@@ -496,6 +496,9 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             try {
                 final Task parentTask = extractParentTask(originalSearchRequest);
                 searchRequest = searchPipelineService.resolvePipeline(originalSearchRequest, parentTask, indexNameExpressionResolver);
+                // Reject response/phase-results processors when a retriever is present (the retriever
+                // tree owns result transformation and the query→fetch boundary).
+                searchRequest.validateRetrieverCompatibility();
                 listener = searchRequest.transformResponseListener(updatedListener);
             } catch (Exception e) {
                 updatedListener.onFailure(e);
@@ -548,6 +551,15 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                 // situations when source is rewritten to null due to a bug
                 searchRequest.source(source);
             }
+            // If the retriever framework resolved with a global leg, wrap the listener
+            // to merge total_hits and aggregations into the final response.
+            final ActionListener<SearchResponse> effectiveListener;
+            if (source != null && source.getRetrieverSearchContext() != null) {
+                final org.opensearch.search.retriever.RetrieverSearchContext retrieverCtx = source.getRetrieverSearchContext();
+                effectiveListener = ActionListener.map(listener, response -> retrieverCtx.merge(response));
+            } else {
+                effectiveListener = listener;
+            }
             final ClusterState clusterState = clusterService.state();
             final OriginalIndicesAndSearchContextId requestedIndices = extractRequestedIndices(searchRequest, clusterState);
             final SearchContextId searchContext = requestedIndices.searchContextId;
@@ -560,7 +572,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     searchRequest,
                     localIndices,
                     clusterState,
-                    listener,
+                    effectiveListener,
                     searchContext,
                     searchAsyncActionProvider,
                     searchRequestContext
@@ -575,7 +587,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                         searchService.aggReduceContextBuilder(searchRequest.source()),
                         remoteClusterService,
                         threadPool,
-                        listener,
+                        effectiveListener,
                         (r, l) -> executeLocalSearch(
                             task,
                             timeProvider,
@@ -635,13 +647,13 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                                 clusterNodeLookup,
                                 clusterState,
                                 remoteAliasFilters,
-                                listener,
+                                effectiveListener,
                                 new SearchResponse.Clusters(totalClusters, successfulClusters, skippedClusters.get()),
                                 searchContext,
                                 searchAsyncActionProvider,
                                 searchRequestContext
                             );
-                        }, listener::onFailure)
+                        }, effectiveListener::onFailure)
                     );
                 }
             }

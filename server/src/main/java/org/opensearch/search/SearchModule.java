@@ -327,6 +327,8 @@ public class SearchModule {
 
     private final List<SearchPlugin.ProfileMetricsProvider> pluginProfilerProviders;
 
+    private final org.opensearch.search.retriever.RetrieverParser retrieverParser;
+
     /**
      * Constructs a new SearchModule object
      * <p>
@@ -358,6 +360,9 @@ public class SearchModule {
         concurrentSearchDeciderFactories = registerConcurrentSearchDeciderFactories(plugins);
         registerQueryCollectorContextSpec(plugins);
         pluginProfilerProviders = registerProfilerProviders(plugins);
+        retrieverParser = org.opensearch.search.retriever.RetrieverModuleRegistration.buildRetrieverParser(plugins);
+        org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration.setGlobalRetrieverParser(retrieverParser);
+        org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
     }
 
     private Collection<ConcurrentSearchRequestDecider.Factory> registerConcurrentSearchDeciderFactories(List<SearchPlugin> plugins) {
@@ -382,6 +387,14 @@ public class SearchModule {
 
     public List<NamedXContentRegistry.Entry> getNamedXContents() {
         return namedXContents;
+    }
+
+    /**
+     * Returns the {@link org.opensearch.search.retriever.RetrieverParser} built from all loaded plugins.
+     * Used by {@code SearchSourceBuilder} to parse the {@code "retriever"} field.
+     */
+    public org.opensearch.search.retriever.RetrieverParser getRetrieverParser() {
+        return retrieverParser;
     }
 
     public ValuesSourceRegistry getValuesSourceRegistry() {
@@ -1122,6 +1135,16 @@ public class SearchModule {
         registerQuery(new QuerySpec<>(DisMaxQueryBuilder.NAME, DisMaxQueryBuilder::new, DisMaxQueryBuilder::fromXContent));
         registerQuery(new QuerySpec<>(IdsQueryBuilder.NAME, IdsQueryBuilder::new, IdsQueryBuilder::fromXContent));
         registerQuery(new QuerySpec<>(MatchAllQueryBuilder.NAME, MatchAllQueryBuilder::new, MatchAllQueryBuilder::fromXContent));
+        // Internal-only query produced by the retriever framework after fusion. It is registered as a
+        // NamedWriteable (so it can be serialized to remote data-node shards during the query phase)
+        // but NOT in the XContent query registry — it is never parsed from a user request.
+        namedWriteables.add(
+            new NamedWriteableRegistry.Entry(
+                QueryBuilder.class,
+                org.opensearch.search.retriever.RankDocsQueryBuilder.NAME,
+                org.opensearch.search.retriever.RankDocsQueryBuilder::new
+            )
+        );
         registerQuery(new QuerySpec<>(QueryStringQueryBuilder.NAME, QueryStringQueryBuilder::new, QueryStringQueryBuilder::fromXContent));
         registerQuery(new QuerySpec<>(BoostingQueryBuilder.NAME, BoostingQueryBuilder::new, BoostingQueryBuilder::fromXContent));
         registerQuery(new QuerySpec<>(BoolQueryBuilder.NAME, BoolQueryBuilder::new, BoolQueryBuilder::fromXContent));

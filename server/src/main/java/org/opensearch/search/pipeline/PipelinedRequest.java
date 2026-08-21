@@ -130,6 +130,38 @@ public final class PipelinedRequest extends SearchRequest {
         return List.of(systemGeneratedPipelineHolder.prePipeline(), pipeline, systemGeneratedPipelineHolder.postPipeline());
     }
 
+    /**
+     * When this request carries a {@code retriever}, reject the user-defined pipeline if it contains
+     * search response or phase-results processors: the retriever tree owns result transformation and
+     * the query&rarr;fetch boundary, so those processors would run against the post-fusion
+     * {@code RankDocsQuery} result (silently wrong) rather than the per-leg results they assume.
+     * Request processors are fine — they enrich each leg's sub-search. See
+     * {@link org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration#validatePipelineCompatibility}.
+     */
+    public void validateRetrieverCompatibility() {
+        if (source() == null || source().retriever() == null) {
+            return;
+        }
+        List<SearchResponseProcessor> responseProcessors = pipeline.getSearchResponseProcessors();
+        List<SearchPhaseResultsProcessor> phaseProcessors = pipeline.getSearchPhaseResultsProcessors();
+        java.util.List<String> responseNames = new java.util.ArrayList<>();
+        for (SearchResponseProcessor p : responseProcessors) {
+            responseNames.add(p.getType());
+        }
+        java.util.List<String> phaseNames = new java.util.ArrayList<>();
+        for (SearchPhaseResultsProcessor p : phaseProcessors) {
+            phaseNames.add(p.getType());
+        }
+        String pipelineName = pipeline() != null ? pipeline() : "<inline>";
+        org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration.validatePipelineCompatibility(
+            pipelineName,
+            responseProcessors.isEmpty() == false,
+            phaseProcessors.isEmpty() == false,
+            responseNames,
+            phaseNames
+        );
+    }
+
     // Visible for testing
     Pipeline getPipeline() {
         return pipeline;

@@ -34,12 +34,14 @@ package org.opensearch.search.builder;
 
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
+import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.Booleans;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.logging.DeprecationLogger;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.ParseField;
+import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.ParsingException;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -54,6 +56,7 @@ import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.mapper.DerivedField;
 import org.opensearch.index.mapper.DerivedFieldMapper;
 import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.index.query.QueryCoordinatorContext;
 import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.query.Rewriteable;
 import org.opensearch.script.Script;
@@ -68,6 +71,11 @@ import org.opensearch.search.fetch.subphase.FieldAndFormat;
 import org.opensearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.rescore.RescorerBuilder;
+import org.opensearch.search.retriever.RetrieverBuilder;
+import org.opensearch.search.retriever.RetrieverContext;
+import org.opensearch.search.retriever.RetrieverExecutor;
+import org.opensearch.search.retriever.RetrieverSearchContext;
+import org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration;
 import org.opensearch.search.searchafter.SearchAfterBuilder;
 import org.opensearch.search.slice.SliceBuilder;
 import org.opensearch.search.sort.ScoreSortBuilder;
@@ -137,6 +145,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public static final ParseField POINT_IN_TIME = new ParseField("pit");
     public static final ParseField SEARCH_PIPELINE = new ParseField("search_pipeline");
     public static final ParseField VERBOSE_SEARCH_PIPELINE = new ParseField("verbose_pipeline");
+    public static final ParseField RETRIEVER_FIELD = new ParseField("retriever");
 
     public static SearchSourceBuilder fromXContent(XContentParser parser) throws IOException {
         return fromXContent(parser, true);
@@ -228,6 +237,20 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     private String searchPipeline;
 
     private boolean verbosePipeline = false;
+
+    /**
+     * The retriever tree for this search request. Mutually exclusive with {@link #queryBuilder}.
+     * When present, the retriever is resolved during rewrite and replaces itself with a
+     * {@link org.opensearch.search.retriever.RankDocsQueryBuilder}.
+     */
+    private RetrieverBuilder retrieverBuilder = null;
+
+    /**
+     * Holds retriever execution context (global leg response with aggs/total_hits) for
+     * post-response merging. Set during rewrite when the retriever resolves.
+     * Transient — not serialized, only used at coordinator during response assembly.
+     */
+    private transient RetrieverSearchContext retrieverSearchContext = null;
 
     /**
      * Constructs a new search source builder.
@@ -1172,6 +1195,28 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     }
 
     /**
+     * Sets the retriever tree for this search. Mutually exclusive with {@link #query(QueryBuilder)}.
+     */
+    public SearchSourceBuilder retriever(RetrieverBuilder retriever) {
+        this.retrieverBuilder = retriever;
+        return this;
+    }
+
+    /**
+     * Gets the retriever builder, or null if not set.
+     */
+    public RetrieverBuilder retriever() {
+        return retrieverBuilder;
+    }
+
+    /**
+     * Gets the retriever search context (for post-response merging), or null if not set.
+     */
+    public RetrieverSearchContext getRetrieverSearchContext() {
+        return retrieverSearchContext;
+    }
+
+    /**
      * Rewrites this search source builder into its primitive form. e.g. by
      * rewriting the QueryBuilder. If the builder did not change the identity
      * reference must be returned otherwise the builder will be rewritten
@@ -1182,6 +1227,118 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         assert (this.equals(
             shallowCopy(queryBuilder, postQueryBuilder, aggregations, sliceBuilder, sorts, rescoreBuilders, highlightBuilder)
         ));
+
+        // Retriever resolution via async multi-search dispatch.
+        // Pass 1: retriever present, no resolved result yet → register async action to dispatch sub-searches
+        // Pass 2 (after async completes): resolvedResult is populated → extract query
+        if (this.retrieverBuilder != null && this.queryBuilder == null) {
+            // Check if the retriever tree has already been resolved (pass 2)
+            if (this.retrieverBuilder.getResolvedResult() != null) {
+                // Auto-set highlight_query so both lexical and semantic highlighters have term/text context
+                // from the original leaf queries (RankDocsQuery has no terms to highlight against)
+                if (this.highlightBuilder != null && this.highlightBuilder.highlightQuery() == null) {
+                    this.highlightBuilder.highlightQuery(this.retrieverBuilder.extractAggregationQuery());
+                }
+                // Resolution complete — convert to query
+                this.queryBuilder = this.retrieverBuilder.toQueryBuilder();
+                // Store the retriever context for post-response merging (total_hits, aggs, explain, profile)
+                this.retrieverSearchContext = new RetrieverSearchContext(this.retrieverBuilder.getGlobalLegResponse());
+
+                // Build per-doc explanations from the resolved tree (when explain=true)
+                if (this.explain != null && this.explain) {
+                    java.util.Map<String, org.apache.lucene.search.Explanation> docExplanations = new java.util.HashMap<>();
+                    for (org.opensearch.search.retriever.RankedDoc doc : this.retrieverBuilder.getResolvedResult()) {
+                        org.apache.lucene.search.Explanation ex = this.retrieverBuilder.buildExplanation(doc.id(), doc.index());
+                        if (ex != null) {
+                            docExplanations.put(RetrieverSearchContext.docKey(doc.id(), doc.index()), ex);
+                        }
+                    }
+                    this.retrieverSearchContext.setDocExplanations(docExplanations);
+                }
+
+                // Build profile tree (when profile=true)
+                if (this.profile) {
+                    this.retrieverSearchContext.setRetrieverProfile(this.retrieverBuilder.buildProfile());
+                    this.retrieverSearchContext.setGlobalLegShardProfiles(this.retrieverBuilder.getGlobalLegShardProfiles());
+                    // Store execution start time for total_time calculation in merge()
+                    this.retrieverSearchContext.setExecutionTiming(this.retrieverBuilder.getProfileStartNanos(), System.nanoTime());
+                }
+
+                // Clear aggregations from SSB — they're already computed in the global leg.
+                // If we leave them, the final search would re-compute aggs over RankDocsQuery
+                // (which only matches top-N), giving wrong counts.
+                this.aggregations = null;
+                // Force track_total_hits disabled on the final RankDocsQuery search.
+                // Its total would just be the fused top-N count — meaningless and confusing.
+                // The real total (if requested) comes from the global leg via RetrieverSearchContext.
+                this.trackTotalHitsUpTo = org.opensearch.search.internal.SearchContext.TRACK_TOTAL_HITS_DISABLED;
+                // Suggest was computed on the global leg; clear it so the final RankDocsQuery search
+                // doesn't recompute it. RetrieverSearchContext.merge() injects the global-leg suggest.
+                this.suggestBuilder = null;
+                this.retrieverBuilder = null; // consumed
+                return shallowCopy(queryBuilder, postQueryBuilder, aggregations, sliceBuilder, sorts, rescoreBuilders, highlightBuilder);
+            }
+
+            // Pass 1: validate, prepare, and register async executor
+            RetrieverContext rootContext = RetrieverContext.root();
+            this.retrieverBuilder.validate(rootContext);
+            this.retrieverBuilder.prepareLeaves(rootContext);
+
+            // Get indices from coordinator context
+            QueryCoordinatorContext coordCtx = context.convertToCoordinatorContext();
+            String[] indices = coordCtx != null ? coordCtx.getSearchRequest().indices() : new String[0];
+
+            // Build SearchRequest propagating PIT, preference, routing, indices_boost, and timeout to sub-searches
+            SearchRequest originalReq = new SearchRequest(indices);
+            SearchSourceBuilder reqSource = new SearchSourceBuilder();
+            if (this.pointInTimeBuilder != null) {
+                reqSource.pointInTimeBuilder(this.pointInTimeBuilder);
+            }
+            for (IndexBoost boost : this.indexBoosts) {
+                reqSource.indexBoost(boost.getIndex(), boost.getBoost());
+            }
+            if (this.timeout != null) {
+                reqSource.timeout(this.timeout);
+            }
+            originalReq.source(reqSource);
+            originalReq.preference(coordCtx != null && coordCtx.getSearchRequest() instanceof SearchRequest
+                ? ((SearchRequest) coordCtx.getSearchRequest()).preference() : null);
+            originalReq.routing(coordCtx != null && coordCtx.getSearchRequest() instanceof SearchRequest
+                ? ((SearchRequest) coordCtx.getSearchRequest()).routing() : null);
+
+            // Track total hits behavior:
+            // - Default (user doesn't set track_total_hits): don't track, no global leg for total hits.
+            //   The final response will have track_total_hits disabled (no misleading count).
+            // - User explicitly sets track_total_hits (true/N): fire global leg with that setting,
+            //   merge the accurate total into the final response.
+            // - track_total_hits: false: explicitly disabled, same as default.
+            // Note: Aggregations still trigger the global leg regardless of this setting.
+            // The RankDocsQuery (final search) never tracks total hits — its count is meaningless.
+            boolean userRequestedTotalHits = this.trackTotalHitsUpTo != null
+                && this.trackTotalHitsUpTo != org.opensearch.search.internal.SearchContext.TRACK_TOTAL_HITS_DISABLED;
+            RetrieverExecutor executor = new RetrieverExecutor(
+                this.retrieverBuilder,
+                indices,
+                originalReq,
+                this.aggregations,
+                this.suggestBuilder, // suggest computed on the global leg, merged back into the response
+                userRequestedTotalHits,
+                userRequestedTotalHits ? this.trackTotalHitsUpTo : null, // pass threshold to global leg
+                this.explain != null && this.explain, // propagate explain to sub-searches
+                this.profile // propagate profile to sub-searches
+            );
+
+            context.registerAsyncAction((client, listener) -> {
+                executor.execute(client, ActionListener.wrap(
+                    v -> listener.onResponse(null),
+                    listener::onFailure
+                ));
+            });
+
+            // Return a new copy to signal the object changed (triggers rewriteAndFetch to run async)
+            return shallowCopy(queryBuilder, postQueryBuilder, aggregations, sliceBuilder, sorts, rescoreBuilders, highlightBuilder);
+        }
+
         QueryBuilder queryBuilder = null;
         if (this.queryBuilder != null) {
             queryBuilder = this.queryBuilder.rewrite(context);
@@ -1270,6 +1427,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         rewrittenBuilder.derivedFields = derivedFields;
         rewrittenBuilder.searchPipeline = searchPipeline;
         rewrittenBuilder.verbosePipeline = verbosePipeline;
+        rewrittenBuilder.retrieverBuilder = retrieverBuilder;
+        rewrittenBuilder.retrieverSearchContext = retrieverSearchContext;
         return rewrittenBuilder;
     }
 
@@ -1423,6 +1582,12 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                         searchPipelineSource = parser.mapOrdered();
                     } else if (DERIVED_FIELDS_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                         derivedFieldsObject = parser.map();
+                    } else if (RETRIEVER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                        // Parse the retriever field via the shared helper: it uses the global registry
+                        // (all built-in + plugin types) at runtime, and a built-in-only fallback registry
+                        // in unit tests that don't start a full SearchModule. The parser is positioned at
+                        // the START_OBJECT of the "retriever" value.
+                        retrieverBuilder = RetrieverBuilder.parseInnerRetrieverBuilder(parser);
                     } else {
                         throw new ParsingException(
                             parser.getTokenLocation(),
@@ -1492,6 +1657,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 );
             }
         }
+        // Validate retriever compatibility after all fields are parsed
+        SearchSourceBuilderRetrieverIntegration.validateCompatibility(this);
         if (checkTrailingTokens) {
             token = parser.nextToken();
             if (token != null) {
@@ -1957,7 +2124,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             derivedFieldsObject,
             derivedFields,
             searchPipeline,
-            verbosePipeline
+            verbosePipeline,
+            retrieverBuilder
         );
     }
 
@@ -2004,7 +2172,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             && Objects.equals(derivedFieldsObject, other.derivedFieldsObject)
             && Objects.equals(derivedFields, other.derivedFields)
             && Objects.equals(searchPipeline, other.searchPipeline)
-            && Objects.equals(verbosePipeline, other.verbosePipeline);
+            && Objects.equals(verbosePipeline, other.verbosePipeline)
+            && Objects.equals(retrieverBuilder, other.retrieverBuilder);
     }
 
     @Override

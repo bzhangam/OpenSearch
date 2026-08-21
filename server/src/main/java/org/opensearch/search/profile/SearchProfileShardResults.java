@@ -62,7 +62,7 @@ import static org.opensearch.core.xcontent.XContentParserUtils.ensureExpectedTok
  *
  * @opensearch.internal
  */
-public final class SearchProfileShardResults implements Writeable, ToXContentFragment {
+public class SearchProfileShardResults implements Writeable, ToXContentFragment {
     private static final String SEARCHES_FIELD = "searches";
     private static final String ID_FIELD = "id";
     private static final String SHARDS_FIELD = "shards";
