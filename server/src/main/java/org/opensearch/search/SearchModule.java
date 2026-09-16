@@ -264,6 +264,8 @@ import org.opensearch.search.query.QueryPhaseSearcher;
 import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 import org.opensearch.search.rescore.QueryRescorerBuilder;
 import org.opensearch.search.rescore.RescorerBuilder;
+import org.opensearch.search.retriever.RankDocsQueryBuilder;
+import org.opensearch.search.retriever.RankDocsSortBuilder;
 import org.opensearch.search.sort.FieldSortBuilder;
 import org.opensearch.search.sort.GeoDistanceSortBuilder;
 import org.opensearch.search.sort.ScoreSortBuilder;
@@ -1187,6 +1189,9 @@ public class SearchModule {
         if (ShapesAvailability.JTS_AVAILABLE && ShapesAvailability.SPATIAL4J_AVAILABLE) {
             registerQuery(new QuerySpec<>(GeoShapeQueryBuilder.NAME, GeoShapeQueryBuilder::new, GeoShapeQueryBuilder::fromXContent));
         }
+        // Internal to the retriever framework: registered so it serializes to data nodes, but fromXContent
+        // always rejects (cannot be authored in a _search body).
+        registerQuery(new QuerySpec<>(RankDocsQueryBuilder.NAME, RankDocsQueryBuilder::new, RankDocsQueryBuilder::fromXContent));
 
         registerFromPlugin(plugins, SearchPlugin::getQueries, this::registerQuery);
     }
@@ -1204,6 +1209,9 @@ public class SearchModule {
         registerSort(new SortSpec<>(ScoreSortBuilder.NAME, ScoreSortBuilder::new, ScoreSortBuilder::fromXContent));
         registerFromPlugin(plugins, SearchPlugin::getSorts, this::registerSort);
         registerSort(new SortSpec<>(ShardDocSortBuilder.NAME, ShardDocSortBuilder::new, ShardDocSortBuilder::fromXContent));
+        // Internal to the retriever framework: registered so it serializes to data nodes, but fromXContent
+        // always rejects (cannot be authored in a _search body).
+        registerSort(new SortSpec<>(RankDocsSortBuilder.NAME, RankDocsSortBuilder::new, RankDocsSortBuilder::fromXContent));
     }
 
     private void registerIntervalsSourceProviders() {

@@ -85,6 +85,7 @@ import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 import org.opensearch.search.rescore.QueryRescorerBuilder;
 import org.opensearch.search.rescore.RescoreContext;
 import org.opensearch.search.rescore.RescorerBuilder;
+import org.opensearch.search.sort.SortBuilder;
 import org.opensearch.search.suggest.Suggest.Suggestion;
 import org.opensearch.search.suggest.Suggest.Suggestion.Entry;
 import org.opensearch.search.suggest.Suggest.Suggestion.Entry.Option;
@@ -362,6 +363,45 @@ public class SearchModuleTests extends OpenSearchTestCase {
         assertThat(registeredAll, containsInAnyOrder(allSupportedQueries.toArray(new String[0])));
     }
 
+    public void testRegisterRetrieverInternalQueryAndSort() {
+        SearchModule module = new SearchModule(Settings.EMPTY, emptyList());
+
+        // rank_docs query: registered as both NamedWriteable and NamedXContent so it serializes to data
+        // nodes and can be inspected via the profile API (fromXContent still rejects authoring).
+        assertEquals(
+            1,
+            module.getNamedWriteables()
+                .stream()
+                .filter(e -> e.categoryClass.equals(QueryBuilder.class) && e.name.equals("rank_docs"))
+                .count()
+        );
+        assertEquals(
+            1,
+            module.getNamedXContents()
+                .stream()
+                .filter(e -> e.categoryClass.equals(QueryBuilder.class) && e.name.match("rank_docs", LoggingDeprecationHandler.INSTANCE))
+                .count()
+        );
+
+        // rank_docs_sort sort: registered likewise.
+        assertEquals(
+            1,
+            module.getNamedWriteables()
+                .stream()
+                .filter(e -> e.categoryClass.equals(SortBuilder.class) && e.name.equals("rank_docs_sort"))
+                .count()
+        );
+        assertEquals(
+            1,
+            module.getNamedXContents()
+                .stream()
+                .filter(
+                    e -> e.categoryClass.equals(SortBuilder.class) && e.name.match("rank_docs_sort", LoggingDeprecationHandler.INSTANCE)
+                )
+                .count()
+        );
+    }
+
     public void testRegisterAggregation() {
         SearchModule module = new SearchModule(Settings.EMPTY, singletonList(new SearchPlugin() {
             @Override
@@ -621,7 +661,8 @@ public class SearchModuleTests extends OpenSearchTestCase {
         "wildcard",
         "wrapper",
         "distance_feature",
-        "template" };
+        "template",
+        "rank_docs" };
 
     // add here deprecated queries to make sure we log a deprecation warnings when they are used
     private static final String[] DEPRECATED_QUERIES = new String[] { "common", "field_masking_span" };
