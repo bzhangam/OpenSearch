@@ -46,6 +46,7 @@ import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.query.QueryShardContext;
 import org.opensearch.index.query.TermQueryBuilder;
 import org.opensearch.index.query.functionscore.GaussDecayFunctionBuilder;
+import org.opensearch.plugins.Plugin;
 import org.opensearch.plugins.SearchPlugin;
 import org.opensearch.search.aggregations.AggregationBuilder;
 import org.opensearch.search.aggregations.AggregatorFactories.Builder;
@@ -85,6 +86,11 @@ import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 import org.opensearch.search.rescore.QueryRescorerBuilder;
 import org.opensearch.search.rescore.RescoreContext;
 import org.opensearch.search.rescore.RescorerBuilder;
+import org.opensearch.search.retriever.RetrieverParser;
+import org.opensearch.search.retriever.RetrieverPlugin;
+import org.opensearch.search.retriever.RetrieverPlugin.RetrieverSpec;
+import org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration;
+import org.opensearch.search.retriever.StandardRetrieverBuilder;
 import org.opensearch.search.sort.SortBuilder;
 import org.opensearch.search.suggest.Suggest.Suggestion;
 import org.opensearch.search.suggest.Suggest.Suggestion.Entry;
@@ -400,6 +406,32 @@ public class SearchModuleTests extends OpenSearchTestCase {
                 )
                 .count()
         );
+    }
+
+    public void testRegisterRetrieverParserNoFlag() {
+        // Constructing SearchModule on default settings (NO feature flag) wires the retriever registry and
+        // registers the built-in `standard` type. Guards the flag-free decision (A3a / rollout-plan G2).
+        new SearchModule(Settings.EMPTY, emptyList());
+        RetrieverParser parser = SearchSourceBuilderRetrieverIntegration.getGlobalRetrieverParser();
+        assertNotNull("SearchModule must publish a global retriever parser", parser);
+        assertTrue("`standard` must be registered", parser.hasRetriever("standard"));
+    }
+
+    public void testRetrieverPluginTypesRegistered() {
+        SearchModule module = new SearchModule(Settings.EMPTY, singletonList(new TestRetrieverPlugin()));
+        // The global parser is last-writer-wins; this SearchModule construction registered the plugin type.
+        RetrieverParser parser = SearchSourceBuilderRetrieverIntegration.getGlobalRetrieverParser();
+        assertNotNull(module);
+        assertTrue("plugin retriever type must be registered", parser.hasRetriever("test_plugin_retriever"));
+        assertTrue("built-in standard still registered", parser.hasRetriever("standard"));
+    }
+
+    /** A SearchPlugin that is also a RetrieverPlugin, contributing one retriever type via the SPI. */
+    private static final class TestRetrieverPlugin extends Plugin implements SearchPlugin, RetrieverPlugin {
+        @Override
+        public List<RetrieverSpec<?>> getRetrievers() {
+            return singletonList(new RetrieverSpec<>("test_plugin_retriever", p -> new StandardRetrieverBuilder()));
+        }
     }
 
     public void testRegisterAggregation() {

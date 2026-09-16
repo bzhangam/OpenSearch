@@ -68,6 +68,9 @@ import org.opensearch.search.fetch.subphase.FieldAndFormat;
 import org.opensearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.rescore.RescorerBuilder;
+import org.opensearch.search.retriever.RetrieverBuilder;
+import org.opensearch.search.retriever.RetrieverParser;
+import org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration;
 import org.opensearch.search.searchafter.SearchAfterBuilder;
 import org.opensearch.search.slice.SliceBuilder;
 import org.opensearch.search.sort.ScoreSortBuilder;
@@ -131,6 +134,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public static final ParseField STATS_FIELD = new ParseField("stats");
     public static final ParseField EXT_FIELD = new ParseField("ext");
     public static final ParseField PROFILE_FIELD = new ParseField("profile");
+    public static final ParseField RETRIEVER_FIELD = new ParseField(SearchSourceBuilderRetrieverIntegration.RETRIEVER_FIELD);
     public static final ParseField SEARCH_AFTER = new ParseField("search_after");
     public static final ParseField COLLAPSE = new ParseField("collapse");
     public static final ParseField SLICE = new ParseField("slice");
@@ -163,6 +167,12 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     }
 
     private QueryBuilder queryBuilder;
+
+    /**
+     * The parsed retriever tree, when a {@code "retriever"} field is present. Coordinator-only: it is
+     * resolved into a query before execution (A3b), so it is not part of the wire form in A3a.
+     */
+    private RetrieverBuilder retrieverBuilder;
 
     private QueryBuilder postQueryBuilder;
 
@@ -411,6 +421,24 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
      */
     public QueryBuilder query() {
         return queryBuilder;
+    }
+
+    /**
+     * The parsed retriever tree for this request, or {@code null} if no {@code "retriever"} field was set.
+     * Coordinator-only — resolved into a query before execution.
+     */
+    public RetrieverBuilder retriever() {
+        return retrieverBuilder;
+    }
+
+    /**
+     * Sets the retriever tree for this request. Set programmatically by the framework or parsed from the
+     * {@code "retriever"} field. Mutually exclusive with a number of top-level fields (see
+     * {@link SearchSourceBuilderRetrieverIntegration#validateCompatibility}).
+     */
+    public SearchSourceBuilder retriever(RetrieverBuilder retrieverBuilder) {
+        this.retrieverBuilder = retrieverBuilder;
+        return this;
     }
 
     /**
@@ -1351,6 +1379,13 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             } else if (token == XContentParser.Token.START_OBJECT) {
                 if (QUERY_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     queryBuilder = parseInnerQueryBuilder(parser);
+                } else if (RETRIEVER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    // Dispatch through the registry (built-in + plugin types). The global parser is set by
+                    // SearchModule at node startup; a fallback registry covers unit tests without full startup.
+                    RetrieverParser registry = SearchSourceBuilderRetrieverIntegration.getGlobalRetrieverParser();
+                    retrieverBuilder = (registry != null)
+                        ? SearchSourceBuilderRetrieverIntegration.parseRetriever(parser, registry)
+                        : RetrieverBuilder.parseInnerRetrieverBuilder(parser);
                 } else if (POST_FILTER_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     postQueryBuilder = parseInnerQueryBuilder(parser);
                 } else if (_SOURCE_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
@@ -1492,6 +1527,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 );
             }
         }
+        // When a retriever is present, enforce mutual-exclusivity with incompatible top-level fields.
+        SearchSourceBuilderRetrieverIntegration.validateCompatibility(this);
         if (checkTrailingTokens) {
             token = parser.nextToken();
             if (token != null) {

@@ -266,6 +266,9 @@ import org.opensearch.search.rescore.QueryRescorerBuilder;
 import org.opensearch.search.rescore.RescorerBuilder;
 import org.opensearch.search.retriever.RankDocsQueryBuilder;
 import org.opensearch.search.retriever.RankDocsSortBuilder;
+import org.opensearch.search.retriever.RetrieverModuleRegistration;
+import org.opensearch.search.retriever.RetrieverParser;
+import org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration;
 import org.opensearch.search.sort.FieldSortBuilder;
 import org.opensearch.search.sort.GeoDistanceSortBuilder;
 import org.opensearch.search.sort.ScoreSortBuilder;
@@ -359,6 +362,19 @@ public class SearchModule {
         concurrentSearchDeciderFactories = registerConcurrentSearchDeciderFactories(plugins);
         registerQueryCollectorContextSpec(plugins);
         pluginProfilerProviders = registerProfilerProviders(plugins);
+        registerRetrievers(settings, plugins);
+    }
+
+    /**
+     * Wire the retriever framework: read the node-scope safety caps and build the retriever type registry
+     * (built-in {@code standard} + any {@code RetrieverPlugin}-provided types), then publish it for
+     * {@code SearchSourceBuilder} to dispatch the {@code "retriever"} field. There is no feature flag —
+     * the retriever field is always available.
+     */
+    private void registerRetrievers(Settings settings, List<SearchPlugin> plugins) {
+        SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
+        RetrieverParser retrieverParser = RetrieverModuleRegistration.buildRetrieverParser(plugins);
+        SearchSourceBuilderRetrieverIntegration.setGlobalRetrieverParser(retrieverParser);
     }
 
     private Collection<ConcurrentSearchRequestDecider.Factory> registerConcurrentSearchDeciderFactories(List<SearchPlugin> plugins) {
