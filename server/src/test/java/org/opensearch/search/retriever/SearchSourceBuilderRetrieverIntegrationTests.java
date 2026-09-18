@@ -8,13 +8,19 @@
 
 package org.opensearch.search.retriever;
 
+import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
+import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.index.query.MatchAllQueryBuilder;
+import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.search.builder.PointInTimeBuilder;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.rescore.QueryRescorerBuilder;
 import org.opensearch.search.slice.SliceBuilder;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.transport.client.Client;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -23,7 +29,7 @@ import java.util.List;
 /**
  * Unit tests for {@link SearchSourceBuilderRetrieverIntegration#validateCompatibility} — each blocked
  * top-level field is rejected with a message that states the REASON it is blocked, plus the bare-standard
- * rule, the from+size window rule, the no-op-when-absent case, and the node-scope cap plumbing.
+ * rule, the no-op-when-absent case, and the node-scope cap plumbing.
  */
 public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTestCase {
 
@@ -41,15 +47,31 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
             }
 
             @Override
-            public int getMaxOutputSize() {
-                return 100;
-            }
-
-            @Override
             public void validate() {}
 
             @Override
             public void prepareLeaves() {}
+
+            @Override
+            void doResolve() {
+                this.resolvedResult = Collections.emptyList();
+            }
+
+            @Override
+            void resolve(Client client, String[] indices, SearchRequest original, ActionListener<Void> whenDone) {
+                doResolve();
+                whenDone.onResponse(null);
+            }
+
+            @Override
+            public QueryBuilder toQueryBuilder() {
+                return new RankDocsQueryBuilder(Collections.emptyList());
+            }
+
+            @Override
+            public QueryBuilder extractAggregationQuery() {
+                return new MatchAllQueryBuilder();
+            }
 
             @Override
             public String getName() {
@@ -104,18 +126,6 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
         assertReason(source, "scroll slicing is incompatible");
     }
 
-    public void testFromSizeWindowExceededRejected() {
-        // compoundRoot window = 100; from + size = 90 + 20 = 110 > 100 → reject.
-        SearchSourceBuilder source = sourceWithCompoundRetriever().from(90).size(20);
-        assertReason(source, "exceeds the retriever's");
-    }
-
-    public void testFromSizeWindowBoundaryAccepted() {
-        // from + size == 100 (the window) → accepted.
-        SearchSourceBuilder source = sourceWithCompoundRetriever().from(80).size(20);
-        SearchSourceBuilderRetrieverIntegration.validateCompatibility(source); // no throw
-    }
-
     public void testNamedSearchPipelineBlocked() {
         SearchSourceBuilder source = sourceWithCompoundRetriever().pipeline("my_pipeline");
         assertReason(source, "cannot use [retriever] and [search_pipeline] together");
@@ -139,6 +149,56 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
         SearchSourceBuilderRetrieverIntegration.configureLimits(Settings.EMPTY);
         assertEquals(5, SearchSourceBuilderRetrieverIntegration.getMaxLeafCount());
         assertEquals(5, SearchSourceBuilderRetrieverIntegration.getMaxDepth());
+    }
+
+    public void testExplicitPitWithRetrieverPitFalseConflicts() {
+        // pit + retriever_pit:false is a contradiction → 400.
+        SearchSourceBuilder source = sourceWithCompoundRetriever().pointInTimeBuilder(new PointInTimeBuilder("user-pit"))
+            .retrieverPit(false);
+        assertReason(source, "cannot use an explicit [pit] with [retriever_pit: false]");
+    }
+
+    public void testExplicitPitWithRetrieverPitTrueIsLegal() {
+        // pit + retriever_pit:true is redundant-but-legal (the user pit wins; framework manages nothing).
+        SearchSourceBuilder source = sourceWithCompoundRetriever().pointInTimeBuilder(new PointInTimeBuilder("user-pit"))
+            .retrieverPit(true);
+        SearchSourceBuilderRetrieverIntegration.validateCompatibility(source); // no throw
+    }
+
+    public void testRetrieverPitDefaultAbsentIsLegal() {
+        // No retriever_pit → default (framework-managed). With or without an explicit pit, no conflict.
+        SearchSourceBuilder withPit = sourceWithCompoundRetriever().pointInTimeBuilder(new PointInTimeBuilder("user-pit"));
+        SearchSourceBuilderRetrieverIntegration.validateCompatibility(withPit); // no throw
+        SearchSourceBuilder noPit = sourceWithCompoundRetriever();
+        SearchSourceBuilderRetrieverIntegration.validateCompatibility(noPit); // no throw
+    }
+
+    public void testPitKeepAliveSizing() {
+        // Default (no request timeout) → the configured default (30s).
+        SearchSourceBuilderRetrieverIntegration.configureLimits(Settings.EMPTY);
+        assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null));
+        // A short request timeout → still the default (never shorter than default).
+        assertEquals(
+            TimeValue.timeValueSeconds(30),
+            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(TimeValue.timeValueSeconds(5))
+        );
+        // A long request timeout → timeout + slack (5s).
+        assertEquals(
+            TimeValue.timeValueSeconds(65),
+            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(TimeValue.timeValueSeconds(60))
+        );
+    }
+
+    public void testPitKeepAliveSettingOverride() {
+        Settings settings = Settings.builder()
+            .put(SearchSourceBuilderRetrieverIntegration.PIT_KEEP_ALIVE_SETTING.getKey(), "45s")
+            .build();
+        SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
+        assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.getPitKeepAliveSetting());
+        assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null));
+        // restore defaults for other tests in the JVM
+        SearchSourceBuilderRetrieverIntegration.configureLimits(Settings.EMPTY);
+        assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.getPitKeepAliveSetting());
     }
 
     private void assertReason(SearchSourceBuilder source, String reasonFragment) {

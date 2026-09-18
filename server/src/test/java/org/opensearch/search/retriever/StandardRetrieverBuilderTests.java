@@ -8,14 +8,20 @@
 
 package org.opensearch.search.retriever;
 
+import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.core.index.Index;
+import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
+import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.MatchAllQueryBuilder;
+import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.search.SearchModule;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.Collections;
+import java.util.List;
 
 import static org.opensearch.common.xcontent.json.JsonXContent.jsonXContent;
 
@@ -76,12 +82,6 @@ public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
         assertTrue(e.getMessage(), e.getMessage().contains("[standard] unknown field [bogus]"));
     }
 
-    public void testGetMaxOutputSizeEqualsSize() {
-        StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
-        b.setSize(37);
-        assertEquals(37, b.getMaxOutputSize());
-    }
-
     public void testCollectLeavesAndChildren() {
         StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
         assertEquals(Collections.singletonList(b), b.collectLeaves());
@@ -110,6 +110,36 @@ public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
     public void testValidateAcceptsSimpleQuery() {
         StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
         b.validate(); // no throw
+    }
+
+    public void testToSearchRequestPropagatesFields() {
+        StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        b.setSize(25);
+        b.setFrom(2);
+        b.setMinScore(0.3f);
+        SearchRequest legReq = b.toSearchRequest(new String[] { "products" }, null);
+        assertArrayEquals(new String[] { "products" }, legReq.indices());
+        assertEquals(25, legReq.source().size());
+        assertEquals(2, legReq.source().from());
+        assertEquals(Float.valueOf(0.3f), legReq.source().minScore());
+        // query is the plain leg query when no filter is set
+        assertTrue(legReq.source().query() instanceof MatchAllQueryBuilder);
+    }
+
+    public void testToSearchRequestWrapsFilterInBool() {
+        StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        b.setFilterBuilder(new MatchAllQueryBuilder());
+        SearchRequest legReq = b.toSearchRequest(new String[] { "products" }, null);
+        assertTrue(legReq.source().query() instanceof BoolQueryBuilder);
+    }
+
+    public void testToQueryBuilderProjectsResolvedCandidatesToRankDocsQuery() {
+        StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        ShardId sid = new ShardId(new Index("products", "_na_"), 1);
+        b.setSearchResult(List.of(new RetrieverCandidate("products", sid, "a", 0.9f, 0)));
+        b.doResolve(); // leaf: resolvedResult = searchResult (the executor calls this via resolve(...))
+        QueryBuilder q = b.toQueryBuilder();
+        assertTrue(q instanceof RankDocsQueryBuilder);
     }
 
     /**

@@ -10,8 +10,8 @@ package org.opensearch.search.retriever;
 
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.xcontent.XContentParser;
-import org.opensearch.search.SearchService;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.internal.SearchContext;
 
@@ -56,15 +56,30 @@ public final class SearchSourceBuilderRetrieverIntegration {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Node-scope keep-alive for a framework-managed PIT (A3c). Request {@code timeout} defaults to
+     * {@code NO_TIMEOUT}, so keep-alive cannot be sized off it for the common case; a fixed, tunable
+     * default is used instead. Must stay well under the cluster PIT keep-alive ceiling. Default 30s.
+     * Read once at node startup via {@link #configureLimits}, matching the other retriever node settings.
+     */
+    public static final Setting<TimeValue> PIT_KEEP_ALIVE_SETTING = Setting.positiveTimeSetting(
+        "search.retriever.pit_keep_alive",
+        TimeValue.timeValueSeconds(30),
+        Setting.Property.NodeScope
+    );
+
     private static volatile int maxLeafCount = MAX_LEAF_COUNT_SETTING.getDefault(Settings.EMPTY);
     private static volatile int maxDepth = MAX_DEPTH_SETTING.getDefault(Settings.EMPTY);
+    private static volatile TimeValue pitKeepAlive = PIT_KEEP_ALIVE_SETTING.getDefault(Settings.EMPTY);
 
     /**
-     * Read the retriever safety caps from node settings. Called by {@code SearchModule} at startup.
+     * Read the retriever safety caps + PIT keep-alive from node settings. Called by {@code SearchModule}
+     * at startup.
      */
     public static void configureLimits(Settings settings) {
         maxLeafCount = MAX_LEAF_COUNT_SETTING.get(settings);
         maxDepth = MAX_DEPTH_SETTING.get(settings);
+        pitKeepAlive = PIT_KEEP_ALIVE_SETTING.get(settings);
     }
 
     /** Max leaf count cap (node scope). */
@@ -75,6 +90,29 @@ public final class SearchSourceBuilderRetrieverIntegration {
     /** Max tree depth cap (node scope). */
     public static int getMaxDepth() {
         return maxDepth;
+    }
+
+    /** Configured framework-managed PIT keep-alive (node scope, dynamic). */
+    public static TimeValue getPitKeepAliveSetting() {
+        return pitKeepAlive;
+    }
+
+    /**
+     * Size the framework-managed PIT keep-alive for a request. Uses the configured default, but when the
+     * request sets an explicit {@code timeout} longer than the default, uses {@code timeout + slack} so a
+     * deliberately long request is not cut off. When {@code timeout} is unset (the default), the fixed
+     * keep-alive default is used outright.
+     *
+     * @param requestTimeout the request-level {@code timeout}, or null when unset
+     */
+    public static TimeValue pitKeepAliveFor(TimeValue requestTimeout) {
+        TimeValue base = pitKeepAlive;
+        if (requestTimeout == null) {
+            return base;
+        }
+        long slackMillis = TimeValue.timeValueSeconds(5).millis();
+        long candidate = requestTimeout.millis() + slackMillis;
+        return candidate > base.millis() ? TimeValue.timeValueMillis(candidate) : base;
     }
 
     /**
@@ -183,24 +221,14 @@ public final class SearchSourceBuilderRetrieverIntegration {
                     + "can run with a retriever (the retriever tree controls result transformation and the query/fetch boundary)"
             );
         }
-
-        // from + size must fit within the tree's available window. Checked once at the root via the
-        // recursive RetrieverBuilder#getMaxOutputSize() contract, so it's correct regardless of tree
-        // depth/shape (compound rank_window_size, transformer pass-through or shrink, leaf size).
-        int effectiveFrom = source.from() < 0 ? SearchService.DEFAULT_FROM : source.from();
-        int effectiveSize = source.size() < 0 ? SearchService.DEFAULT_SIZE : source.size();
-        int maxOutputSize = source.retriever().getMaxOutputSize();
-        if (effectiveFrom + effectiveSize > maxOutputSize) {
+        // retriever_pit is a framework-scoped opt-out; an explicit user pit + retriever_pit:false is a
+        // contradiction (the user both supplied a snapshot and asked for no framework snapshot). pit +
+        // retriever_pit:true is redundant-but-legal (the user pit wins; the framework never manages it).
+        if (source.pointInTimeBuilder() != null && Boolean.FALSE.equals(source.retrieverPit())) {
             throw new IllegalArgumentException(
-                "[from] ("
-                    + effectiveFrom
-                    + ") + [size] ("
-                    + effectiveSize
-                    + ") exceeds the retriever's "
-                    + "available window ("
-                    + maxOutputSize
-                    + "); increase [rank_window_size] on the enclosing "
-                    + "compound retriever (or [window_size] on a wrapping [rescore]), or reduce [from]/[size]"
+                "cannot use an explicit [pit] with [retriever_pit: false]; these contradict — [pit] supplies a "
+                    + "snapshot to search while [retriever_pit: false] asks for no point-in-time. Remove one: keep [pit] "
+                    + "to manage the snapshot yourself, or drop it and set [retriever_pit: false] to run on live readers"
             );
         }
     }

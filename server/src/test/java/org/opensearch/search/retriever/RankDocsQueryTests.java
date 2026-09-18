@@ -11,8 +11,12 @@ package org.opensearch.search.retriever;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.ScoreDoc;
@@ -40,6 +44,15 @@ public class RankDocsQueryTests extends OpenSearchTestCase {
 
     /** Index {@code ids} as documents whose only field is the encoded {@code _id}, one doc per id. */
     private static void indexIds(RandomIndexWriter w, List<String> ids) throws IOException {
+        for (String id : ids) {
+            Document doc = new Document();
+            doc.add(new Field(IdFieldMapper.NAME, Uid.encodeId(id), IdFieldMapper.Defaults.FIELD_TYPE));
+            w.addDocument(doc);
+        }
+    }
+
+    /** Deterministic overload: index {@code ids} via a plain {@link IndexWriter} (used with NoMergePolicy). */
+    private static void indexIds(IndexWriter w, List<String> ids) throws IOException {
         for (String id : ids) {
             Document doc = new Document();
             doc.add(new Field(IdFieldMapper.NAME, Uid.encodeId(id), IdFieldMapper.Defaults.FIELD_TYPE));
@@ -190,13 +203,15 @@ public class RankDocsQueryTests extends OpenSearchTestCase {
 
     public void testMultiSegmentResolution() throws Exception {
         try (Directory dir = newDirectory()) {
-            RandomIndexWriter w = new RandomIndexWriter(random(), dir, new KeywordAnalyzer());
-            // Force >= 2 segments by committing between batches.
+            // Use a plain IndexWriter with NoMergePolicy so the two committed batches DETERMINISTICALLY
+            // remain two segments. (RandomIndexWriter may randomly force-merge on getReader(), collapsing to
+            // one segment — a seed-dependent flake — which defeats the point of this multi-segment test.)
+            IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new KeywordAnalyzer()).setMergePolicy(NoMergePolicy.INSTANCE));
             indexIds(w, List.of("a", "b"));
             w.commit();
             indexIds(w, List.of("c", "d"));
             w.commit();
-            IndexReader reader = w.getReader();
+            IndexReader reader = DirectoryReader.open(w);
             w.close();
             assertTrue("expected multiple segments", reader.leaves().size() >= 2);
             IndexSearcher searcher = newSearcher(reader);

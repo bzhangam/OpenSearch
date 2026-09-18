@@ -9,18 +9,23 @@
 package org.opensearch.search.retriever;
 
 import org.opensearch.action.search.SearchRequest;
+import org.opensearch.action.search.SearchResponse;
 import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.query.AbstractQueryBuilder;
 import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.search.SearchHit;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.collapse.CollapseBuilder;
 import org.opensearch.search.fetch.subphase.FieldAndFormat;
 import org.opensearch.search.rescore.RescorerBuilder;
 import org.opensearch.search.searchafter.SearchAfterBuilder;
 import org.opensearch.search.sort.SortBuilder;
+import org.opensearch.transport.client.Client;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -51,6 +56,9 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
     private Boolean trackScores;
     private List<FieldAndFormat> docvalueFields;
     private List<RescorerBuilder> rescorers;
+
+    /** Set by the executor after this leaf's sub-search returns — its dispatched ranked candidates. */
+    private List<RetrieverCandidate> searchResult;
 
     public StandardRetrieverBuilder() {}
 
@@ -159,19 +167,69 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
 
     // --- RetrieverBuilder contract ---
 
+    /** Set this leaf's dispatched ranked candidates (called by the executor after its sub-search returns). */
+    void setSearchResult(List<RetrieverCandidate> searchResult) {
+        this.searchResult = searchResult;
+    }
+
     @Override
     public List<StandardRetrieverBuilder> collectLeaves() {
         return Collections.singletonList(this);
     }
 
     @Override
-    public List<RetrieverBuilder> getChildRetrievers() {
-        return Collections.emptyList();
+    void doResolve() {
+        // A leaf is already resolved — its ranked output is exactly the result its own dispatch produced.
+        this.resolvedResult = searchResult;
     }
 
     @Override
-    public int getMaxOutputSize() {
-        return size;
+    void resolve(Client client, String[] indices, SearchRequest original, ActionListener<Void> whenDone) {
+        // A leaf is the only node that does I/O: dispatch its own sub-search, then resolve on the response.
+        client.search(toSearchRequest(indices, original), ActionListener.wrap(response -> {
+            this.searchResult = extractCandidates(response);
+            doResolve();
+            whenDone.onResponse(null);
+        }, whenDone::onFailure));
+    }
+
+    /** Turn this leg's query-phase hits into ranked {@link RetrieverCandidate}s; position = hit order. */
+    private static List<RetrieverCandidate> extractCandidates(SearchResponse response) {
+        SearchHit[] hits = response.getHits().getHits();
+        List<RetrieverCandidate> candidates = new ArrayList<>(hits.length);
+        int position = 0;
+        for (SearchHit hit : hits) {
+            ShardId shardId = hit.getShard() != null ? hit.getShard().getShardId() : null;
+            if (shardId == null) {
+                // A hit must carry its shard for the (index, shardId) scoping the RankDocsQuery relies on.
+                throw new IllegalStateException("retriever leg hit [" + hit.getId() + "] has no shard target");
+            }
+            candidates.add(new RetrieverCandidate(hit.getIndex(), shardId, hit.getId(), hit.getScore(), position++));
+        }
+        return candidates;
+    }
+
+    @Override
+    public QueryBuilder toQueryBuilder() {
+        // Project the resolved candidate window to the wire RankDoc list and build the internal
+        // RankDocsQuery that replays this ranking on the final fetch.
+        List<RankDoc> window = new ArrayList<>(resolvedResult == null ? 0 : resolvedResult.size());
+        if (resolvedResult != null) {
+            for (RetrieverCandidate candidate : resolvedResult) {
+                window.add(candidate.toRankDoc());
+            }
+        }
+        return new RankDocsQueryBuilder(window);
+    }
+
+    @Override
+    public QueryBuilder extractAggregationQuery() {
+        return toLegQuery();
+    }
+
+    @Override
+    public List<RetrieverBuilder> getChildRetrievers() {
+        return Collections.emptyList();
     }
 
     @Override
@@ -206,9 +264,10 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
     }
 
     /**
-     * The query this leaf contributes: the plain query, or a {@code bool} of query + filter.
+     * The query this leaf contributes to its own leg sub-search: the plain query, or a {@code bool} of
+     * query + filter. This is NOT the tree's final query — see {@link #toQueryBuilder()}.
      */
-    public QueryBuilder toQueryBuilder() {
+    QueryBuilder toLegQuery() {
         if (filterBuilder != null) {
             return new BoolQueryBuilder().must(queryBuilder).filter(filterBuilder);
         }
@@ -224,7 +283,7 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
      * @return a fully configured SearchRequest ready for dispatch
      */
     public SearchRequest toSearchRequest(String[] indices, SearchRequest originalRequest) {
-        SearchSourceBuilder source = new SearchSourceBuilder().query(toQueryBuilder())
+        SearchSourceBuilder source = new SearchSourceBuilder().query(toLegQuery())
             .from(from)
             .size(size)
             .trackScores(trackScores != null ? trackScores : true);
@@ -257,6 +316,10 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
         SearchRequest legRequest = new SearchRequest(indices);
         legRequest.source(source);
         if (originalRequest != null) {
+            // Inherit the original request's search type so leg scoring matches a normal search. Without
+            // this, a DFS_QUERY_THEN_FETCH request would score its legs with per-shard QUERY_THEN_FETCH
+            // statistics (different IDF), diverging from the equivalent plain search.
+            legRequest.searchType(originalRequest.searchType());
             legRequest.preference(originalRequest.preference());
             legRequest.routing(originalRequest.routing());
             if (originalRequest.source() != null) {

@@ -34,12 +34,14 @@ package org.opensearch.search.builder;
 
 import org.opensearch.OpenSearchException;
 import org.opensearch.Version;
+import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.Booleans;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.logging.DeprecationLogger;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.ParseField;
+import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.ParsingException;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.StreamInput;
@@ -54,6 +56,7 @@ import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.mapper.DerivedField;
 import org.opensearch.index.mapper.DerivedFieldMapper;
 import org.opensearch.index.query.QueryBuilder;
+import org.opensearch.index.query.QueryCoordinatorContext;
 import org.opensearch.index.query.QueryRewriteContext;
 import org.opensearch.index.query.Rewriteable;
 import org.opensearch.script.Script;
@@ -69,7 +72,9 @@ import org.opensearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.rescore.RescorerBuilder;
 import org.opensearch.search.retriever.RetrieverBuilder;
+import org.opensearch.search.retriever.RetrieverExecutor;
 import org.opensearch.search.retriever.RetrieverParser;
+import org.opensearch.search.retriever.RetrieverResolutionContext;
 import org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration;
 import org.opensearch.search.searchafter.SearchAfterBuilder;
 import org.opensearch.search.slice.SliceBuilder;
@@ -135,6 +140,7 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
     public static final ParseField EXT_FIELD = new ParseField("ext");
     public static final ParseField PROFILE_FIELD = new ParseField("profile");
     public static final ParseField RETRIEVER_FIELD = new ParseField(SearchSourceBuilderRetrieverIntegration.RETRIEVER_FIELD);
+    public static final ParseField RETRIEVER_PIT_FIELD = new ParseField("retriever_pit");
     public static final ParseField SEARCH_AFTER = new ParseField("search_after");
     public static final ParseField COLLAPSE = new ParseField("collapse");
     public static final ParseField SLICE = new ParseField("slice");
@@ -173,6 +179,28 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
      * resolved into a query before execution (A3b), so it is not part of the wire form in A3a.
      */
     private RetrieverBuilder retrieverBuilder;
+
+    /**
+     * The framework-scoped PIT opt-out ({@code retriever_pit}). {@code null} = default (framework opens a
+     * PIT); {@code Boolean.FALSE} = opt out (live readers); {@code Boolean.TRUE} = redundant-but-legal
+     * (framework manages a PIT, same as default). Only meaningful when a {@code retriever} is present.
+     */
+    private Boolean retrieverPit;
+
+    /**
+     * Transient state for the two-pass retriever rewrite: once the executor has run its async
+     * {@code multiSearch} and resolved the tree, the resulting {@code RankDocsQuery} is stored here so the
+     * next rewrite pass can swap it into {@code queryBuilder}. Never serialized; coordinator-only.
+     */
+    private transient QueryBuilder retrieverResolvedQuery;
+
+    /**
+     * Transient coordinator-only accumulator populated by the {@code RetrieverExecutor} during resolution
+     * (the stashed global-leg response, and — in A3d — explain/profile fragments). Carried from the
+     * rewrite pass onto the resolved source so {@code TransportSearchAction} can call
+     * {@code context.merge(finalResponse)} to patch the response. Never serialized.
+     */
+    private transient RetrieverResolutionContext retrieverResolutionContext;
 
     private QueryBuilder postQueryBuilder;
 
@@ -438,6 +466,31 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
      */
     public SearchSourceBuilder retriever(RetrieverBuilder retrieverBuilder) {
         this.retrieverBuilder = retrieverBuilder;
+        return this;
+    }
+
+    /**
+     * The framework-scoped PIT opt-out ({@code retriever_pit}): {@code null} = default (framework-managed
+     * PIT), {@code false} = opt out (live readers), {@code true} = redundant-but-legal.
+     */
+    public Boolean retrieverPit() {
+        return retrieverPit;
+    }
+
+    /** Sets the {@code retriever_pit} opt-out. */
+    public SearchSourceBuilder retrieverPit(Boolean retrieverPit) {
+        this.retrieverPit = retrieverPit;
+        return this;
+    }
+
+    /** The coordinator-only resolution-context accumulator (set during the retriever rewrite). */
+    public RetrieverResolutionContext retrieverResolutionContext() {
+        return retrieverResolutionContext;
+    }
+
+    /** Sets the coordinator-only resolution context (framework internal). */
+    public SearchSourceBuilder retrieverResolutionContext(RetrieverResolutionContext context) {
+        this.retrieverResolutionContext = context;
         return this;
     }
 
@@ -1210,6 +1263,107 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         assert (this.equals(
             shallowCopy(queryBuilder, postQueryBuilder, aggregations, sliceBuilder, sorts, rescoreBuilders, highlightBuilder)
         ));
+        // Retriever framework two-pass resolution. When a retriever tree is present we resolve it into an
+        // internal RankDocsQuery before the normal rewrite proceeds:
+        // pass 1: register an async action that runs the RetrieverExecutor (leg dispatch + bottom-up
+        // resolve), storing the resolved query on the returned copy; return that copy so the
+        // rewrite loop drains the async action.
+        // pass 2: the resolved query is available -> swap it into `query`, clear the retriever, and fall
+        // through to a normal rewrite of the resulting source.
+        // Only runs on the coordinator (where a QueryCoordinatorContext exposes the request indices).
+        if (this.retrieverBuilder != null) {
+            QueryCoordinatorContext coordinatorContext = context.convertToCoordinatorContext();
+            if (coordinatorContext != null) {
+                if (this.retrieverResolvedQuery != null) {
+                    // pass 2 - swap resolved query in, drop the retriever.
+                    SearchSourceBuilder resolved = shallowCopy(
+                        this.retrieverResolvedQuery,
+                        postQueryBuilder,
+                        aggregations,
+                        sliceBuilder,
+                        sorts,
+                        rescoreBuilders,
+                        highlightBuilder
+                    );
+                    resolved.retrieverBuilder = null;
+                    resolved.retrieverResolvedQuery = null;
+                    // Carry the resolution context onto the resolved source so TransportSearchAction's
+                    // wrapped response listener can call context.merge(finalResponse) to add back the
+                    // global-leg aggregations / total the final RankDocsQuery search must not recompute.
+                    resolved.retrieverResolutionContext = this.retrieverResolutionContext;
+                    // The final RankDocsQuery search only matches the fused window, so it must NOT recompute
+                    // aggregations or the total — those come from the global leg (union of leaf queries) and
+                    // are spliced in by merge(). Clear aggs here; track_total_hits is handled just below.
+                    resolved.aggregations = null;
+                    // track_total_hits is disabled by default for a retriever request: a retriever result is a
+                    // curated top-N ranking over a bounded window, not a match set, so counting matches of the
+                    // final RankDocsQuery (the fused window) is a different, misleading number. Disable it on the
+                    // final search regardless — when the user DID request it, the accurate union total comes from
+                    // the global leg via merge(), not from the RankDocsQuery search.
+                    resolved.trackTotalHitsUpTo = TRACK_TOTAL_HITS_DISABLED;
+                    // Propagate the framework-managed PIT onto the FINAL search. The executor set it on the
+                    // original request source (the seam the legs read); the final RankDocsQuery search runs
+                    // from this `resolved` source, so it must carry the same pit or the final fetch would use
+                    // a live reader and miss docs that changed after the tree resolved (defeating the PIT).
+                    // A user-supplied pit is already on `resolved` (copied by shallowCopy) and is left as-is.
+                    if (resolved.pointInTimeBuilder == null
+                        && coordinatorContext.getSearchRequest() instanceof SearchRequest
+                        && ((SearchRequest) coordinatorContext.getSearchRequest()).source() != null) {
+                        PointInTimeBuilder frameworkPit = ((SearchRequest) coordinatorContext.getSearchRequest()).source()
+                            .pointInTimeBuilder();
+                        if (frameworkPit != null) {
+                            resolved.pointInTimeBuilder = frameworkPit;
+                        }
+                    }
+                    return resolved;
+                }
+                // pass 1 - register the executor as an async action on a fresh copy, then return that copy.
+                final SearchSourceBuilder pending = shallowCopy(
+                    queryBuilder,
+                    postQueryBuilder,
+                    aggregations,
+                    sliceBuilder,
+                    sorts,
+                    rescoreBuilders,
+                    highlightBuilder
+                );
+                final String[] indices = coordinatorContext.getSearchRequest().indices();
+                final SearchRequest originalRequest = coordinatorContext.getSearchRequest() instanceof SearchRequest
+                    ? (SearchRequest) coordinatorContext.getSearchRequest()
+                    : null;
+                final boolean effectiveTrackTotalHits = trackTotalHitsUpTo != null
+                    && trackTotalHitsUpTo != SearchContext.TRACK_TOTAL_HITS_DISABLED;
+                // Resolution context: the accumulator the executor populates (global-leg response now;
+                // explain/profile in A3d) and TransportSearchAction consumes via merge(). Carried onto the
+                // resolved source below so the response listener can read it.
+                final RetrieverResolutionContext resolutionContext = new RetrieverResolutionContext(effectiveTrackTotalHits);
+                // PIT policy: framework-managed PIT is on by default (retriever_pit != false). The executor
+                // still runs a user-supplied pit verbatim (and never releases it); retriever_pit:false opts out.
+                final boolean frameworkPit = Boolean.FALSE.equals(retrieverPit) == false;
+                final TimeValue pitKeepAlive = SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(
+                    originalRequest != null && originalRequest.source() != null ? originalRequest.source().timeout() : null
+                );
+                pending.retrieverResolutionContext = resolutionContext;
+                context.registerAsyncAction((client, asyncListener) -> {
+                    RetrieverExecutor executor = new RetrieverExecutor(
+                        pending.retrieverBuilder,
+                        indices,
+                        originalRequest,
+                        aggregations,
+                        effectiveTrackTotalHits,
+                        trackTotalHitsUpTo,
+                        resolutionContext,
+                        frameworkPit,
+                        pitKeepAlive
+                    );
+                    executor.execute(client, ActionListener.wrap(unused -> {
+                        pending.retrieverResolvedQuery = executor.getResolvedQuery();
+                        asyncListener.onResponse(null);
+                    }, asyncListener::onFailure));
+                });
+                return pending;
+            }
+        }
         QueryBuilder queryBuilder = null;
         if (this.queryBuilder != null) {
             queryBuilder = this.queryBuilder.rewrite(context);
@@ -1298,6 +1452,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
         rewrittenBuilder.derivedFields = derivedFields;
         rewrittenBuilder.searchPipeline = searchPipeline;
         rewrittenBuilder.verbosePipeline = verbosePipeline;
+        rewrittenBuilder.retrieverBuilder = retrieverBuilder;
+        rewrittenBuilder.retrieverPit = retrieverPit;
+        rewrittenBuilder.retrieverResolutionContext = retrieverResolutionContext;
         return rewrittenBuilder;
     }
 
@@ -1354,6 +1511,8 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                     } else {
                         trackTotalHitsUpTo = parser.intValue();
                     }
+                } else if (RETRIEVER_PIT_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
+                    retrieverPit = parser.booleanValue();
                 } else if (_SOURCE_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     fetchSourceContext = FetchSourceContext.fromXContent(parser);
                 } else if (STORED_FIELDS_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
@@ -1994,7 +2153,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             derivedFieldsObject,
             derivedFields,
             searchPipeline,
-            verbosePipeline
+            verbosePipeline,
+            retrieverBuilder,
+            retrieverPit
         );
     }
 
@@ -2041,7 +2202,9 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
             && Objects.equals(derivedFieldsObject, other.derivedFieldsObject)
             && Objects.equals(derivedFields, other.derivedFields)
             && Objects.equals(searchPipeline, other.searchPipeline)
-            && Objects.equals(verbosePipeline, other.verbosePipeline);
+            && Objects.equals(verbosePipeline, other.verbosePipeline)
+            && Objects.equals(retrieverBuilder, other.retrieverBuilder)
+            && Objects.equals(retrieverPit, other.retrieverPit);
     }
 
     @Override

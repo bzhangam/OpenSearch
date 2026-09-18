@@ -85,6 +85,7 @@ import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.pipeline.PipelinedRequest;
 import org.opensearch.search.pipeline.SearchPipelineService;
 import org.opensearch.search.profile.ProfileShardResult;
+import org.opensearch.search.retriever.RetrieverResolutionContext;
 import org.opensearch.search.profile.SearchProfileShardResults;
 import org.opensearch.search.slice.SliceBuilder;
 import org.opensearch.tasks.CancellableTask;
@@ -530,7 +531,46 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                 // situations when source is rewritten to null due to a bug
                 searchRequest.source(source);
             }
-            final ClusterState clusterState = clusterService.state();
+            // Retriever framework: if the resolved source carries a resolution context, wrap the response
+            // listener so that (1) context.merge(finalResponse) patches the response with the global-leg
+            // aggregations / total the final RankDocsQuery search did not compute, and (2) the
+            // framework-managed PIT (if one was opened) is released AFTER the final response — on both
+            // success and failure. Release must happen here, not in the executor: the PIT has to outlive
+            // tree resolution and cover the final search, which runs after the rewrite phase.
+            final ActionListener<SearchResponse> responseListener;
+            if (source != null && source.retrieverResolutionContext() != null) {
+                final RetrieverResolutionContext resolutionContext = source.retrieverResolutionContext();
+                ActionListener<SearchResponse> merged = ActionListener.map(listener, resolutionContext::merge);
+                final String frameworkPitId = resolutionContext.getFrameworkManagedPitId();
+                if (frameworkPitId != null) {
+                    responseListener = ActionListener.runAfter(
+                        merged,
+                        () -> client.execute(
+                            DeletePitAction.INSTANCE,
+                            new DeletePitRequest(frameworkPitId),
+                            ActionListener.wrap(r -> {}, e -> {})
+                        )
+                    );
+                } else {
+                    responseListener = merged;
+                }
+            } else {
+                responseListener = listener;
+            }
+            buildRewriteListenerBody(searchRequest, task, timeProvider, searchAsyncActionProvider, responseListener, searchRequestContext);
+        }, listener::onFailure);
+    }
+
+    private void buildRewriteListenerBody(
+        SearchRequest searchRequest,
+        Task task,
+        SearchTimeProvider timeProvider,
+        SearchAsyncActionProvider searchAsyncActionProvider,
+        ActionListener<SearchResponse> listener,
+        SearchRequestContext searchRequestContext
+    ) {
+        final ClusterState clusterState = clusterService.state();
+        {
             final OriginalIndicesAndSearchContextId requestedIndices = extractRequestedIndices(searchRequest, clusterState);
             final SearchContextId searchContext = requestedIndices.searchContextId;
             final Map<String, OriginalIndices> remoteClusterIndices = requestedIndices.remoteClusterIndices;
@@ -627,7 +667,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     );
                 }
             }
-        }, listener::onFailure);
+        }
     }
 
     static boolean shouldMinimizeRoundtrips(SearchRequest searchRequest) {
