@@ -137,7 +137,11 @@ public class RetrieverExecutorTests extends OpenSearchTestCase {
         assertTrue("cascade should succeed", success.get());
         assertEquals("one CreatePit", 1, pitClient.createCount.get());
         assertEquals("executor does NOT release (relocated to the transport response wrap)", 0, pitClient.deleteCount.get());
-        assertEquals("pit id recorded on the context for later release", PitCountingClient.CREATED_PIT_ID, context.getFrameworkManagedPitId());
+        assertEquals(
+            "pit id recorded on the context for later release",
+            PitCountingClient.CREATED_PIT_ID,
+            context.getFrameworkManagedPitId()
+        );
         pitClient.close();
     }
 

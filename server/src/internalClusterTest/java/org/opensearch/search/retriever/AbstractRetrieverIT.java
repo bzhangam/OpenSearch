@@ -53,9 +53,8 @@ public abstract class AbstractRetrieverIT extends OpenSearchIntegTestCase {
     /** Create the shared {@code products} corpus with the given shard count (0 replicas), then refresh. */
     protected void createProducts(int shards) {
         assertAcked(
-            prepareCreate(INDEX).setSettings(
-                Settings.builder().put(SETTING_NUMBER_OF_SHARDS, shards).put(SETTING_NUMBER_OF_REPLICAS, 0)
-            ).setMapping("title", "type=text", "brand", "type=keyword")
+            prepareCreate(INDEX).setSettings(Settings.builder().put(SETTING_NUMBER_OF_SHARDS, shards).put(SETTING_NUMBER_OF_REPLICAS, 0))
+                .setMapping("title", "type=text", "brand", "type=keyword")
         );
         index("a", "wireless headphones", "acme");
         index("b", "bluetooth headphones", "acme");

@@ -107,11 +107,11 @@ public class RetrieverExecutor {
             // State 3: open a framework-managed PIT. The executor OPENS it and sets it on the request source
             // (the seam every leg / the global leg / the final RankDocsQuery search inherit). Release is
             // split across two mutually-exclusive outcomes so the PIT is freed exactly once:
-            //   (a) resolution FAILS here  -> the final search will never run, so THIS method releases the
-            //       PIT and clears the id from the context so the transport wrap does not double-release;
-            //   (b) resolution SUCCEEDS    -> the PIT must outlive resolution to cover the final search, so
-            //       it is released by TransportSearchAction's wrapped response listener (which reads the id
-            //       off the context) after the final response, on both its success and failure paths.
+            // (a) resolution FAILS here -> the final search will never run, so THIS method releases the
+            // PIT and clears the id from the context so the transport wrap does not double-release;
+            // (b) resolution SUCCEEDS -> the PIT must outlive resolution to cover the final search, so
+            // it is released by TransportSearchAction's wrapped response listener (which reads the id
+            // off the context) after the final response, on both its success and failure paths.
             CreatePitRequest createPitRequest = new CreatePitRequest(pitKeepAlive, false, indices);
             client.execute(CreatePitAction.INSTANCE, createPitRequest, ActionListener.wrap(createPitResponse -> {
                 final String pitId = createPitResponse.getId();
@@ -223,9 +223,7 @@ public class RetrieverExecutor {
             // than max_concurrent_leg_searches leg searches at once (0 = unbounded). The global leg (above)
             // and PIT ops use the raw client — the cap is scoped to the tree's leaf legs, per its name.
             int maxConcurrentLegSearches = SearchSourceBuilderRetrieverIntegration.getMaxConcurrentLegSearches();
-            Client legClient = maxConcurrentLegSearches > 0
-                ? new LegConcurrencyLimitingClient(client, maxConcurrentLegSearches)
-                : client;
+            Client legClient = maxConcurrentLegSearches > 0 ? new LegConcurrencyLimitingClient(client, maxConcurrentLegSearches) : client;
             root.resolve(legClient, indices, originalRequest, legDone);
         } catch (Exception e) {
             listener.onFailure(e);

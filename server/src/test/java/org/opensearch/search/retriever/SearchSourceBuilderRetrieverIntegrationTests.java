@@ -197,10 +197,7 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
             .build();
         SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
         // cap 2, 6 leaves → ceil(6/2)=3 rounds → 3 * 30s + 5s slack = 95s.
-        assertEquals(
-            TimeValue.timeValueSeconds(95),
-            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 6)
-        );
+        assertEquals(TimeValue.timeValueSeconds(95), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 6));
         // cap >= leafCount → no serialization → default 30s.
         assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 2));
         assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 1));
@@ -210,9 +207,7 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
     }
 
     public void testPitKeepAliveSettingOverride() {
-        Settings settings = Settings.builder()
-            .put(SearchSourceBuilderRetrieverIntegration.PIT_KEEP_ALIVE_SETTING.getKey(), "45s")
-            .build();
+        Settings settings = Settings.builder().put(SearchSourceBuilderRetrieverIntegration.PIT_KEEP_ALIVE_SETTING.getKey(), "45s").build();
         SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
         assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.getPitKeepAliveSetting());
         assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 1));

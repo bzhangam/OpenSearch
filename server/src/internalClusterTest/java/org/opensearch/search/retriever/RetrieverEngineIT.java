@@ -130,8 +130,8 @@ public class RetrieverEngineIT extends AbstractRetrieverIT {
         // available slice (the 2 candidates the tree produced), never a 400.
         //
         // INPUT (over 6 docs a-f on 3 shards; 4 match "headphones" but leg size caps candidates at 2):
-        //   { "retriever": { "standard": { "query": { "match": { "title": "headphones" } }, "size": 2 } },
-        //     "size": 10 }
+        // { "retriever": { "standard": { "query": { "match": { "title": "headphones" } }, "size": 2 } },
+        // "size": 10 }
         // OUTPUT: 0 failed shards; hits.length == 2 (the 2 highest-scoring candidates in the window).
         SearchResponse r = retrieverSearch(
             "{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}},\"size\":2}}",
@@ -148,7 +148,7 @@ public class RetrieverEngineIT extends AbstractRetrieverIT {
         // `_search` whose `from` exceeds the number of hits, this returns an EMPTY page (no error).
         //
         // INPUT: { "retriever": { "standard": { "query": { "match": { "title": "headphones" } }, "size": 2 } },
-        //         "from": 100, "size": 10 }
+        // "from": 100, "size": 10 }
         // OUTPUT: 0 failed shards; hits.length == 0 (empty page, no 400).
         String body = "{\"retriever\":{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}},\"size\":2}},"
             + "\"from\":100,\"size\":10}";
@@ -165,7 +165,11 @@ public class RetrieverEngineIT extends AbstractRetrieverIT {
         //
         // INPUT: {"retriever":{"standard":{"query":{"match":{"title":"headphones"}}}},"size":10}
         // OUTPUT: hits returned (a,b,d,f); total is NOT tracked (getTotalHits() == null).
-        SearchResponse r = retrieverSearch("{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}}", 10, SearchType.QUERY_THEN_FETCH);
+        SearchResponse r = retrieverSearch(
+            "{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}}",
+            10,
+            SearchType.QUERY_THEN_FETCH
+        );
         assertEquals(0, r.getFailedShards());
         assertEquals(4, r.getHits().getHits().length);
         // track_total_hits disabled → the total is not tracked at all; getTotalHits() is null.

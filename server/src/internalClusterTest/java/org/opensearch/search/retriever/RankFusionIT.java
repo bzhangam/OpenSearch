@@ -42,7 +42,9 @@ public class RankFusionIT extends AbstractRetrieverIT {
         return "{\"retriever\":{\"rank_fusion\":{\"retrievers\":["
             + "{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}},"
             + "{\"standard\":{\"query\":{\"term\":{\"brand\":\"acme\"}}}}"
-            + "]" + tail + "}},\"size\":10}";
+            + "]"
+            + tail
+            + "}},\"size\":10}";
     }
 
     public void testTwoLegRrfFusionReturnsUnionRanked() throws Exception {
@@ -120,11 +122,7 @@ public class RankFusionIT extends AbstractRetrieverIT {
     public void testCrossIndexIdKeyedDistinct() throws Exception {
         createProducts(3);
         // A second index sharing an _id with the first; (index,_id) keying keeps them distinct through fusion.
-        client().admin()
-            .indices()
-            .prepareCreate("more")
-            .setMapping("title", "type=text", "brand", "type=keyword")
-            .get();
+        client().admin().indices().prepareCreate("more").setMapping("title", "type=text", "brand", "type=keyword").get();
         client().prepareIndex("more").setId("a").setSource("title", "acme headphones deluxe", "brand", "acme").get();
         client().admin().indices().prepareRefresh("more").get();
 

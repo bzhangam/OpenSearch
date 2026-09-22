@@ -115,7 +115,11 @@ public class RetrieverPitIT extends AbstractRetrieverIT {
         //
         // INPUT: {"retriever":{"standard":{"query":{"match":{"title":"headphones"}}}},"size":10}
         // OUTPUT: 0 failed shards; 4 hits (a,b,d,f); and NO PIT leaked (pitCurrent back to 0 afterward).
-        SearchResponse r = retrieverSearch("{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}}", 10, SearchType.QUERY_THEN_FETCH);
+        SearchResponse r = retrieverSearch(
+            "{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}}",
+            10,
+            SearchType.QUERY_THEN_FETCH
+        );
         assertEquals(0, r.getFailedShards());
         assertEquals(4, r.getHits().getHits().length);
         // Release is fire-and-forget after the response is built, so assertBusy for the gauge to return to 0.
@@ -128,7 +132,7 @@ public class RetrieverPitIT extends AbstractRetrieverIT {
         // fetch is STILL returned — the final fetch reads the frozen snapshot.
         //
         // INPUT: {"retriever":{"standard":{"query":{"match":{"title":"headphones"}}}},"size":10}
-        //   with doc "d" deleted+refreshed (on the test thread) between the leg and the final fetch.
+        // with doc "d" deleted+refreshed (on the test thread) between the leg and the final fetch.
         // OUTPUT: doc "d" retained → 4 hits including "d".
         SearchResponse r = runWithMidRequestDelete(
             "{\"retriever\":{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}},\"size\":10}",
@@ -145,7 +149,7 @@ public class RetrieverPitIT extends AbstractRetrieverIT {
         // deleted doc is gone. The contrast with the test above proves the PIT (not something else) is the cause.
         //
         // INPUT: {"retriever":{"standard":{"query":{"match":{"title":"headphones"}}}},"retriever_pit":false,"size":10}
-        //   with doc "d" deleted+refreshed (on the test thread) between the leg and the final fetch.
+        // with doc "d" deleted+refreshed (on the test thread) between the leg and the final fetch.
         // OUTPUT: doc "d" absent → 3 hits.
         SearchResponse r = runWithMidRequestDelete(
             "{\"retriever\":{\"standard\":{\"query\":{\"match\":{\"title\":\"headphones\"}}}},\"retriever_pit\":false,\"size\":10}",
@@ -208,13 +212,9 @@ public class RetrieverPitIT extends AbstractRetrieverIT {
             assertEquals(0, r.getFailedShards());
             assertEquals(4, r.getHits().getHits().length);
         } finally {
-            DeletePitResponse deleteResponse = client().execute(DeletePitAction.INSTANCE, new DeletePitRequest(pit.getId()))
-                .actionGet();
+            DeletePitResponse deleteResponse = client().execute(DeletePitAction.INSTANCE, new DeletePitRequest(pit.getId())).actionGet();
             assertFalse("user PIT should still exist (framework must not delete it)", deleteResponse.getDeletePitResults().isEmpty());
-            assertTrue(
-                "user PIT delete should succeed (it was still valid)",
-                deleteResponse.getDeletePitResults().get(0).isSuccessful()
-            );
+            assertTrue("user PIT delete should succeed (it was still valid)", deleteResponse.getDeletePitResults().get(0).isSuccessful());
         }
     }
 
