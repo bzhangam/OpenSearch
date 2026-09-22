@@ -175,48 +175,15 @@ public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
         }
     }
 
-    /** A RetrieverWindowAware test query that records the window handed to it (or -1 if never called). */
-    private static final class RetrieverWindowAwareQueryBuilder extends MatchAllQueryBuilder implements RetrieverWindowAware {
-        int appliedWindow = Integer.MIN_VALUE;
-
-        @Override
-        public void applyRetrieverWindow(int window) {
-            this.appliedWindow = window;
-        }
-    }
-
-    /** A RetrieverWindowAware test query that rejects the window — models knn with an insufficient explicit k. */
-    private static final class RejectingWindowAwareQueryBuilder extends MatchAllQueryBuilder implements RetrieverWindowAware {
-        @Override
-        public void applyRetrieverWindow(int window) {
-            throw new IllegalArgumentException("[knn] explicit [k] is smaller than [rank_window_size] " + window);
-        }
-    }
-
-    public void testPrepareLeavesAppliesWindowToWindowAwareQueryUnderFusion() {
-        RetrieverWindowAwareQueryBuilder q = new RetrieverWindowAwareQueryBuilder();
-        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(q);
+    public void testPrepareLeavesInheritsWindowAsLegSizeUnderFusion() {
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
         leaf.prepareLeaves(LeafPreparationContext.root().underFusion(50));
-        assertEquals("window pushed to the RetrieverWindowAware leg query", 50, q.appliedWindow);
         assertEquals("leg fetch depth inherits the window", 50, leaf.getSize());
     }
 
-    public void testPrepareLeavesPropagatesWindowAwareRejection() {
-        // A RetrieverWindowAware query that rejects an insufficient cap (e.g. knn with explicit k < window)
-        // must surface its exception through prepareLeaves, before any dispatch.
-        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(new RejectingWindowAwareQueryBuilder());
-        IllegalArgumentException e = expectThrows(
-            IllegalArgumentException.class,
-            () -> leaf.prepareLeaves(LeafPreparationContext.root().underFusion(50))
-        );
-        assertTrue(e.getMessage(), e.getMessage().contains("smaller than [rank_window_size]"));
-    }
-
-    public void testPrepareLeavesDoesNotApplyWindowWhenNotFusionGoverned() {
-        RetrieverWindowAwareQueryBuilder q = new RetrieverWindowAwareQueryBuilder();
-        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(q);
+    public void testPrepareLeavesUsesDefaultSizeWhenNotFusionGoverned() {
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
         leaf.prepareLeaves(LeafPreparationContext.root());
-        assertEquals("applyRetrieverWindow not called off-fusion", Integer.MIN_VALUE, q.appliedWindow);
         assertEquals("unset, non-fusion leg falls back to default size", StandardRetrieverBuilder.DEFAULT_SIZE, leaf.getSize());
     }
 

@@ -298,12 +298,10 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
                 );
             }
             this.effectiveWindow = context.getInheritedWindow();
-            // Some query types have their own internal candidate cap that leg [size] does not touch (e.g. the
-            // knn query's [k]). If this leg's query is window-aware, hand it the window so it can align that cap;
-            // otherwise leg [size] alone governs the candidate count.
-            if (queryBuilder instanceof RetrieverWindowAware) {
-                ((RetrieverWindowAware) queryBuilder).applyRetrieverWindow(this.effectiveWindow);
-            }
+            // The retriever governs only the leg's fetch depth ([size] = rank_window_size). A query's own
+            // internal candidate cap (e.g. the knn query's [k], or min_score/max_distance thresholds) is the
+            // user's responsibility — set it appropriately (typically k >= rank_window_size) so the leg can
+            // supply the window. The retriever does not read or modify it.
         } else {
             // Not fusion-governed: keep any explicit size, otherwise fall back to DEFAULT_SIZE at dispatch.
             this.effectiveWindow = LeafPreparationContext.NO_WINDOW;

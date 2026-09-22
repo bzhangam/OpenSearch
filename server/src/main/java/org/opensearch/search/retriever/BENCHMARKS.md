@@ -61,6 +61,15 @@ express.
   Savings scale with `document size × rank_window_size × num_legs` (negligible on tiny docs). Stored fields
   are kept because the leg still needs `_id`.
 
+## Leg candidate depth
+
+The retriever sets each leg's `size` to `rank_window_size` (the fused window depth). A query's own internal
+candidate cap — the `knn` query's `k`, or `min_score` / `max_distance` thresholds — is **not** modified by
+the retriever; it is the user's responsibility. For a `knn`/`neural` leg, set `k` (or a threshold)
+appropriately for the desired depth, typically `k >= rank_window_size`, so the leg can supply the full
+window. A leg that returns fewer than `rank_window_size` candidates (small `k`, a selective filter, or a
+small index) simply contributes fewer docs to fusion — which is valid, so the retriever does not enforce it.
+
 ## Future optimization
 
 - **`_msearch` batching** of legs would cut per-leg coordinator overhead (one multi-search request instead
