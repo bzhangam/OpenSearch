@@ -18,6 +18,7 @@ import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.MatchAllQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.search.SearchModule;
+import org.opensearch.search.collapse.CollapseBuilder;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.Collections;
@@ -26,8 +27,8 @@ import java.util.List;
 import static org.opensearch.common.xcontent.json.JsonXContent.jsonXContent;
 
 /**
- * Unit tests for {@link StandardRetrieverBuilder} parsing, the tree contract, and validation. A3a scope:
- * parse/contract only — the executor dispatch of {@code toSearchRequest} is exercised in A3b.
+ * Unit tests for {@link StandardRetrieverBuilder} parsing, the tree contract, and validation. Scope:
+ * parse/contract only — the executor dispatch of {@code toSearchRequest} is exercised in the executor/IT tests.
  */
 public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
 
@@ -58,7 +59,10 @@ public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
         assertTrue(b.getQueryBuilder() instanceof MatchAllQueryBuilder);
         assertNull(b.getFilterBuilder());
         assertEquals(0, b.getFrom());
-        assertEquals(100, b.getSize());
+        // Unset size resolves to the normal _search default (10); no explicit size was supplied.
+        assertNull(b.getExplicitSize());
+        assertEquals(StandardRetrieverBuilder.DEFAULT_SIZE, b.getSize());
+        assertEquals(10, b.getSize());
         assertEquals("standard", b.getName());
     }
 
@@ -126,6 +130,24 @@ public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
         assertTrue(legReq.source().query() instanceof MatchAllQueryBuilder);
     }
 
+    public void testToSearchRequestTrimsFetchForRankOnlyLeg() {
+        // A leg disables _source (payload loaded by the final fetch) but keeps stored fields — it still
+        // needs _id to key candidates.
+        StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        SearchRequest legReq = b.toSearchRequest(new String[] { "products" }, null);
+        assertNotNull(legReq.source().fetchSource());
+        assertFalse("_source disabled on the leg", legReq.source().fetchSource().fetchSource());
+        assertNull("stored fields left default (so _id is still fetched)", legReq.source().storedFields());
+    }
+
+    public void testToSearchRequestKeepsSourceDisabledWithCollapse() {
+        // _source stays disabled regardless of collapse; collapse fetches its field via stored/docvalue.
+        StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        b.setCollapse(new CollapseBuilder("brand"));
+        SearchRequest legReq = b.toSearchRequest(new String[] { "products" }, null);
+        assertFalse("_source still disabled", legReq.source().fetchSource().fetchSource());
+    }
+
     public void testToSearchRequestWrapsFilterInBool() {
         StandardRetrieverBuilder b = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
         b.setFilterBuilder(new MatchAllQueryBuilder());
@@ -151,5 +173,67 @@ public class StandardRetrieverBuilderTests extends OpenSearchTestCase {
         public String getWriteableName() {
             return "hybrid";
         }
+    }
+
+    /** A RetrieverWindowAware test query that records the window handed to it (or -1 if never called). */
+    private static final class RetrieverWindowAwareQueryBuilder extends MatchAllQueryBuilder implements RetrieverWindowAware {
+        int appliedWindow = Integer.MIN_VALUE;
+
+        @Override
+        public void applyRetrieverWindow(int window) {
+            this.appliedWindow = window;
+        }
+    }
+
+    /** A RetrieverWindowAware test query that rejects the window — models knn with an insufficient explicit k. */
+    private static final class RejectingWindowAwareQueryBuilder extends MatchAllQueryBuilder implements RetrieverWindowAware {
+        @Override
+        public void applyRetrieverWindow(int window) {
+            throw new IllegalArgumentException("[knn] explicit [k] is smaller than [rank_window_size] " + window);
+        }
+    }
+
+    public void testPrepareLeavesAppliesWindowToWindowAwareQueryUnderFusion() {
+        RetrieverWindowAwareQueryBuilder q = new RetrieverWindowAwareQueryBuilder();
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(q);
+        leaf.prepareLeaves(LeafPreparationContext.root().underFusion(50));
+        assertEquals("window pushed to the RetrieverWindowAware leg query", 50, q.appliedWindow);
+        assertEquals("leg fetch depth inherits the window", 50, leaf.getSize());
+    }
+
+    public void testPrepareLeavesPropagatesWindowAwareRejection() {
+        // A RetrieverWindowAware query that rejects an insufficient cap (e.g. knn with explicit k < window)
+        // must surface its exception through prepareLeaves, before any dispatch.
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(new RejectingWindowAwareQueryBuilder());
+        IllegalArgumentException e = expectThrows(
+            IllegalArgumentException.class,
+            () -> leaf.prepareLeaves(LeafPreparationContext.root().underFusion(50))
+        );
+        assertTrue(e.getMessage(), e.getMessage().contains("smaller than [rank_window_size]"));
+    }
+
+    public void testPrepareLeavesDoesNotApplyWindowWhenNotFusionGoverned() {
+        RetrieverWindowAwareQueryBuilder q = new RetrieverWindowAwareQueryBuilder();
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(q);
+        leaf.prepareLeaves(LeafPreparationContext.root());
+        assertEquals("applyRetrieverWindow not called off-fusion", Integer.MIN_VALUE, q.appliedWindow);
+        assertEquals("unset, non-fusion leg falls back to default size", StandardRetrieverBuilder.DEFAULT_SIZE, leaf.getSize());
+    }
+
+    public void testPrepareLeavesRejectsExplicitSizeUnderFusion() {
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        leaf.setSize(25);
+        IllegalArgumentException e = expectThrows(
+            IllegalArgumentException.class,
+            () -> leaf.prepareLeaves(LeafPreparationContext.root().underFusion(50))
+        );
+        assertTrue(e.getMessage(), e.getMessage().contains("does not support [size] inside a [rank_fusion]"));
+    }
+
+    public void testPrepareLeavesAllowsExplicitSizeOffFusion() {
+        StandardRetrieverBuilder leaf = new StandardRetrieverBuilder(new MatchAllQueryBuilder());
+        leaf.setSize(25);
+        leaf.prepareLeaves(LeafPreparationContext.root()); // no throw
+        assertEquals(25, leaf.getSize());
     }
 }

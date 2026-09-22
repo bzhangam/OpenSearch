@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.opensearch.common.xcontent.json.JsonXContent.jsonXContent;
 
 /**
- * Integration tests for framework-managed PIT (A3c) on a real multi-shard cluster. Kept in their own
+ * Integration tests for framework-managed PIT on a real multi-shard cluster. Kept in their own
  * class (decoupled from {@link RetrieverEngineIT}) and reusing the shared corpus/helpers from
  * {@link AbstractRetrieverIT}.
  * <p>

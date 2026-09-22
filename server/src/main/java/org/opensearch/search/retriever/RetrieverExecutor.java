@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code track_total_hits}) is fired as its own search and joined only at the end — it never gates tree
  * resolution.
  * <p>
- * <b>PIT lifecycle (A3c).</b> Three states, in precedence order:
+ * <b>PIT lifecycle.</b> Three states, in precedence order:
  * <ol>
  *   <li><b>user-supplied {@code pit}</b> — the original request source already carries a
  *       {@code pointInTimeBuilder}; the cascade runs under it and the framework <b>never</b> releases a
@@ -54,7 +54,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *       is surfaced, never degraded to live readers.</li>
  * </ol>
  * The PIT id flows to every round because legs read it from
- * {@code originalRequest.source().pointInTimeBuilder()} (A3b); setting it there is the whole propagation.
+ * {@code originalRequest.source().pointInTimeBuilder()}; setting it there is the whole propagation.
  *
  * @opensearch.internal
  */
@@ -185,8 +185,9 @@ public class RetrieverExecutor {
                 );
                 return;
             }
-            // Phase 2: prepare leaves top-down.
-            root.prepareLeaves();
+            // Phase 2: prepare leaves top-down. The root context is not fusion-governed; a fusion node in
+            // the tree derives an underFusion(...) context and pushes its window down to its subtree.
+            root.prepareLeaves(LeafPreparationContext.root());
 
             // Two independent async flows joined at the end: (1) tree resolution (the ranking) and, when
             // present, (2) the global leg (aggs / track_total_hits). The global leg does NOT gate the tree.
@@ -217,8 +218,15 @@ public class RetrieverExecutor {
                 }, legDone::onFailure));
             }
 
-            // Resolve the tree (each leaf dispatches its own search; compounds resolve inline).
-            root.resolve(client, indices, originalRequest, legDone);
+            // Resolve the tree (each leaf dispatches its own search; compounds resolve inline). The tree's
+            // leaf searches go through a per-request leg-concurrency limiter so no single request bursts more
+            // than max_concurrent_leg_searches leg searches at once (0 = unbounded). The global leg (above)
+            // and PIT ops use the raw client — the cap is scoped to the tree's leaf legs, per its name.
+            int maxConcurrentLegSearches = SearchSourceBuilderRetrieverIntegration.getMaxConcurrentLegSearches();
+            Client legClient = maxConcurrentLegSearches > 0
+                ? new LegConcurrencyLimitingClient(client, maxConcurrentLegSearches)
+                : client;
+            root.resolve(legClient, indices, originalRequest, legDone);
         } catch (Exception e) {
             listener.onFailure(e);
         }

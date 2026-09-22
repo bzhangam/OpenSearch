@@ -119,7 +119,7 @@ public class RetrieverExecutorTests extends OpenSearchTestCase {
         assertTrue(e.getMessage(), e.getMessage().contains("[standard] requires [query]"));
     }
 
-    // ---- PIT lifecycle matrix (A3c) ----
+    // ---- PIT lifecycle matrix ----
     // The executor OPENS the framework PIT (state 3), sets it on the request source, and records the pit id
     // on the context — but does NOT release it (release is relocated to TransportSearchAction's wrapped
     // response listener, because the PIT must outlive tree resolution and cover the final search). So these
@@ -275,9 +275,9 @@ public class RetrieverExecutorTests extends OpenSearchTestCase {
         }
 
         @Override
-        public void prepareLeaves() {
+        public void prepareLeaves(LeafPreparationContext context) {
             for (RetrieverBuilder c : children) {
-                c.prepareLeaves();
+                c.prepareLeaves(context);
             }
         }
 
@@ -331,7 +331,7 @@ public class RetrieverExecutorTests extends OpenSearchTestCase {
         public void validate() {}
 
         @Override
-        public void prepareLeaves() {}
+        public void prepareLeaves(LeafPreparationContext context) {}
 
         @Override
         void doResolve() {

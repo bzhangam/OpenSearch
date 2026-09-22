@@ -57,6 +57,23 @@ public class RetrieverParserTests extends OpenSearchTestCase {
         assertNotNull(((StandardRetrieverBuilder) rb).getQueryBuilder());
     }
 
+    public void testParseRankFusionAndNesting() throws Exception {
+        // rank_fusion registered + dispatched from the registry; nested rank_fusion parses via the same path.
+        RetrieverBuilder rb = parse(
+            "{\"rank_fusion\":{\"retrievers\":["
+                + "{\"standard\":{\"query\":{\"match_all\":{}}}},"
+                + "{\"rank_fusion\":{\"retrievers\":["
+                + "  {\"standard\":{\"query\":{\"match_all\":{}}}},"
+                + "  {\"standard\":{\"query\":{\"match_all\":{}}}}]}}"
+                + "]}}"
+        );
+        assertTrue(rb instanceof RankFusionRetrieverBuilder);
+        assertEquals("rank_fusion", rb.getName());
+        RankFusionRetrieverBuilder rf = (RankFusionRetrieverBuilder) rb;
+        assertEquals(2, rf.getChildRetrievers().size());
+        assertTrue(rf.getChildRetrievers().get(1) instanceof RankFusionRetrieverBuilder);
+    }
+
     public void testUnknownTypeRejected() throws Exception {
         IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> parse("{\"nope\":{}}"));
         assertTrue(e.getMessage(), e.getMessage().contains("unknown retriever type [nope]"));

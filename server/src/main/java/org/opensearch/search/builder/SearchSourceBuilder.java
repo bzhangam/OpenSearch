@@ -1340,8 +1340,10 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                 // PIT policy: framework-managed PIT is on by default (retriever_pit != false). The executor
                 // still runs a user-supplied pit verbatim (and never releases it); retriever_pit:false opts out.
                 final boolean frameworkPit = Boolean.FALSE.equals(retrieverPit) == false;
+                final int leafCount = pending.retrieverBuilder.collectLeaves().size();
                 final TimeValue pitKeepAlive = SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(
-                    originalRequest != null && originalRequest.source() != null ? originalRequest.source().timeout() : null
+                    originalRequest != null && originalRequest.source() != null ? originalRequest.source().timeout() : null,
+                    leafCount
                 );
                 pending.retrieverResolutionContext = resolutionContext;
                 context.registerAsyncAction((client, asyncListener) -> {

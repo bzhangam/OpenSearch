@@ -23,7 +23,7 @@ import static org.hamcrest.Matchers.containsString;
 /**
  * Integration tests for the retriever engine on a real, multi-shard cluster.
  * <p>
- * A3a proved the request is accepted / validated. A3b proves it <b>executes</b>: a top-level
+ * End-to-end execution test: a top-level
  * {@code standard} retriever resolves (per-node listener-based resolution: each leaf dispatches its own
  * {@code client.search}, results become {@code RetrieverCandidate}s, the tree resolves into a
  * {@code RankDocsQuery}) and returns results identical to the equivalent plain {@code _search} — the top
@@ -189,7 +189,7 @@ public class RetrieverEngineIT extends AbstractRetrieverIT {
 
     public void testBlockedComboStillRejectedThroughParse() throws Exception {
         createProducts(3);
-        // Sanity that A3a validation still fires on the real parse path (parse-time; unit covers the matrix).
+        // Sanity that validation still fires on the real parse path (parse-time; unit covers the matrix).
         IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
             () -> SearchSourceBuilder.fromXContent(

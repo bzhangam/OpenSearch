@@ -50,7 +50,7 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
             public void validate() {}
 
             @Override
-            public void prepareLeaves() {}
+            public void prepareLeaves(LeafPreparationContext context) {}
 
             @Override
             void doResolve() {
@@ -174,19 +174,39 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
     }
 
     public void testPitKeepAliveSizing() {
-        // Default (no request timeout) → the configured default (30s).
+        // Default (no request timeout, no leg-concurrency cap) → the configured default (30s).
         SearchSourceBuilderRetrieverIntegration.configureLimits(Settings.EMPTY);
-        assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null));
+        assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 1));
         // A short request timeout → still the default (never shorter than default).
         assertEquals(
             TimeValue.timeValueSeconds(30),
-            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(TimeValue.timeValueSeconds(5))
+            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(TimeValue.timeValueSeconds(5), 1)
         );
         // A long request timeout → timeout + slack (5s).
         assertEquals(
             TimeValue.timeValueSeconds(65),
-            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(TimeValue.timeValueSeconds(60))
+            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(TimeValue.timeValueSeconds(60), 1)
         );
+    }
+
+    public void testPitKeepAliveScalesWithLegConcurrencyCap() {
+        // With max_concurrent_leg_searches, legs serialize into ceil(leafCount/cap) rounds; the keep-alive
+        // must grow with that factor so the framework PIT does not expire mid-request under throttling.
+        Settings settings = Settings.builder()
+            .put(SearchSourceBuilderRetrieverIntegration.MAX_CONCURRENT_LEG_SEARCHES_SETTING.getKey(), 2)
+            .build();
+        SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
+        // cap 2, 6 leaves → ceil(6/2)=3 rounds → 3 * 30s + 5s slack = 95s.
+        assertEquals(
+            TimeValue.timeValueSeconds(95),
+            SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 6)
+        );
+        // cap >= leafCount → no serialization → default 30s.
+        assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 2));
+        assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 1));
+        // restore defaults for other tests in the JVM
+        SearchSourceBuilderRetrieverIntegration.configureLimits(Settings.EMPTY);
+        assertEquals(0, SearchSourceBuilderRetrieverIntegration.getMaxConcurrentLegSearches());
     }
 
     public void testPitKeepAliveSettingOverride() {
@@ -195,7 +215,7 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
             .build();
         SearchSourceBuilderRetrieverIntegration.configureLimits(settings);
         assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.getPitKeepAliveSetting());
-        assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null));
+        assertEquals(TimeValue.timeValueSeconds(45), SearchSourceBuilderRetrieverIntegration.pitKeepAliveFor(null, 1));
         // restore defaults for other tests in the JVM
         SearchSourceBuilderRetrieverIntegration.configureLimits(Settings.EMPTY);
         assertEquals(TimeValue.timeValueSeconds(30), SearchSourceBuilderRetrieverIntegration.getPitKeepAliveSetting());

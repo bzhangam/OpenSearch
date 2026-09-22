@@ -57,7 +57,7 @@ public final class SearchSourceBuilderRetrieverIntegration {
     );
 
     /**
-     * Node-scope keep-alive for a framework-managed PIT (A3c). Request {@code timeout} defaults to
+     * Node-scope keep-alive for a framework-managed PIT. Request {@code timeout} defaults to
      * {@code NO_TIMEOUT}, so keep-alive cannot be sized off it for the common case; a fixed, tunable
      * default is used instead. Must stay well under the cluster PIT keep-alive ceiling. Default 30s.
      * Read once at node startup via {@link #configureLimits}, matching the other retriever node settings.
@@ -68,18 +68,34 @@ public final class SearchSourceBuilderRetrieverIntegration {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Node-scope cap on how many of a single request's <b>leg searches</b> run concurrently. Bounds
+     * fan-out burst on the coordinator without serializing more than necessary. {@code 0} = unbounded
+     * (the default — all legs fire at once). Because the cap can
+     * <b>serialize</b> legs, it lengthens worst-case request wall-time, which is why
+     * {@link #pitKeepAliveFor(TimeValue, int)} scales the PIT keep-alive with it (see that method).
+     */
+    public static final Setting<Integer> MAX_CONCURRENT_LEG_SEARCHES_SETTING = Setting.intSetting(
+        "search.retriever.max_concurrent_leg_searches",
+        0,
+        0,
+        Setting.Property.NodeScope
+    );
+
     private static volatile int maxLeafCount = MAX_LEAF_COUNT_SETTING.getDefault(Settings.EMPTY);
     private static volatile int maxDepth = MAX_DEPTH_SETTING.getDefault(Settings.EMPTY);
     private static volatile TimeValue pitKeepAlive = PIT_KEEP_ALIVE_SETTING.getDefault(Settings.EMPTY);
+    private static volatile int maxConcurrentLegSearches = MAX_CONCURRENT_LEG_SEARCHES_SETTING.getDefault(Settings.EMPTY);
 
     /**
-     * Read the retriever safety caps + PIT keep-alive from node settings. Called by {@code SearchModule}
-     * at startup.
+     * Read the retriever safety caps + PIT keep-alive + leg-concurrency cap from node settings. Called by
+     * {@code SearchModule} at startup.
      */
     public static void configureLimits(Settings settings) {
         maxLeafCount = MAX_LEAF_COUNT_SETTING.get(settings);
         maxDepth = MAX_DEPTH_SETTING.get(settings);
         pitKeepAlive = PIT_KEEP_ALIVE_SETTING.get(settings);
+        maxConcurrentLegSearches = MAX_CONCURRENT_LEG_SEARCHES_SETTING.get(settings);
     }
 
     /** Max leaf count cap (node scope). */
@@ -92,27 +108,52 @@ public final class SearchSourceBuilderRetrieverIntegration {
         return maxDepth;
     }
 
-    /** Configured framework-managed PIT keep-alive (node scope, dynamic). */
+    /** Configured framework-managed PIT keep-alive (node scope). */
     public static TimeValue getPitKeepAliveSetting() {
         return pitKeepAlive;
     }
 
+    /** Max concurrent leg searches per request; 0 = unbounded (node scope). */
+    public static int getMaxConcurrentLegSearches() {
+        return maxConcurrentLegSearches;
+    }
+
     /**
-     * Size the framework-managed PIT keep-alive for a request. Uses the configured default, but when the
-     * request sets an explicit {@code timeout} longer than the default, uses {@code timeout + slack} so a
-     * deliberately long request is not cut off. When {@code timeout} is unset (the default), the fixed
-     * keep-alive default is used outright.
+     * Size the framework-managed PIT keep-alive for a request. The PIT must cover the <b>whole</b>
+     * request — all leg rounds plus the final {@code RankDocsQuery} fetch — so its lifetime must account
+     * for two things:
+     * <ul>
+     *   <li>the request {@code timeout} when set (a deliberately long request must not be cut off), and</li>
+     *   <li><b>leg serialization from {@code max_concurrent_leg_searches}</b>: with a cap of {@code c} and
+     *       {@code n} leaves, up to {@code ceil(n/c)} sequential leg rounds run, so the worst-case
+     *       wall-time — and thus the required keep-alive — grows with that factor. A <b>fixed</b>
+     *       keep-alive would let the PIT expire mid-request under throttling (a self-inflicted
+     *       {@code SearchContextMissing}); scaling it here prevents that.</li>
+     * </ul>
+     * Returns {@code max(default, timeout+slack, serializedRounds * perRoundBudget + slack)}.
      *
      * @param requestTimeout the request-level {@code timeout}, or null when unset
+     * @param leafCount      the number of leaf searches in the tree (from {@code collectLeaves().size()})
      */
-    public static TimeValue pitKeepAliveFor(TimeValue requestTimeout) {
-        TimeValue base = pitKeepAlive;
-        if (requestTimeout == null) {
-            return base;
-        }
+    public static TimeValue pitKeepAliveFor(TimeValue requestTimeout, int leafCount) {
+        long base = pitKeepAlive.millis();
         long slackMillis = TimeValue.timeValueSeconds(5).millis();
-        long candidate = requestTimeout.millis() + slackMillis;
-        return candidate > base.millis() ? TimeValue.timeValueMillis(candidate) : base;
+        long candidate = base;
+
+        if (requestTimeout != null) {
+            candidate = Math.max(candidate, requestTimeout.millis() + slackMillis);
+        }
+
+        // Account for leg serialization: ceil(leafCount / cap) sequential rounds when a cap is set.
+        int cap = maxConcurrentLegSearches;
+        if (cap > 0 && leafCount > cap) {
+            int rounds = (leafCount + cap - 1) / cap; // ceil
+            // Budget one keep-alive-default worth of time per serialized round, plus slack. Conservative:
+            // it over-estimates a fast cluster but guarantees the PIT outlives the worst serialized case.
+            long serialized = (long) rounds * base + slackMillis;
+            candidate = Math.max(candidate, serialized);
+        }
+        return TimeValue.timeValueMillis(candidate);
     }
 
     /**

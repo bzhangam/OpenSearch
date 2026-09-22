@@ -27,24 +27,17 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>
  * A retriever produces a ranked result set. Leaf retrievers ({@link StandardRetrieverBuilder}) retrieve
  * candidates from an index; compound retrievers fuse multiple children; transformer retrievers reshape a
- * single child. This A3a base carries the parse/validate/tree-structure contract only — the bottom-up
- * resolution machinery (the executor, the {@code RetrieverCandidate} currency, {@code toQueryBuilder},
- * async resolution, and {@code explain}/{@code profile}) is added by later sub-features (A3b/A3d) and is
- * intentionally absent here, so the skeleton can be parsed and validated before any execution exists.
+ * single child. This base carries the parse/validate/tree-structure contract; the bottom-up resolution
+ * machinery (the executor, the {@code RetrieverCandidate} currency, {@code toQueryBuilder}, async
+ * resolution) lives on the concrete nodes and the executor.
  * <p>
- * The A3a lifecycle a node participates in:
+ * The lifecycle a node participates in:
  * <ol>
  *   <li>parse (via the registry / {@link #parseInnerRetrieverBuilder} for nested children)</li>
  *   <li>{@link #validate()} — top-down structural validation</li>
- *   <li>{@link #prepareLeaves()} — top-down leaf preparation</li>
+ *   <li>{@link #prepareLeaves(LeafPreparationContext)} — top-down leaf preparation</li>
  *   <li>{@link #collectLeaves()} — gather all leaf nodes</li>
  * </ol>
- * <p>
- * Note: the top-down ancestor→leaf constraint/modifier mechanism (a {@code RetrieverContext} carrying
- * {@code LeafConstraint}/{@code LeafModifier}) is intentionally NOT introduced here — A3a has no
- * compound/transformer types to produce constraints/modifiers, so it would be an abstraction with no
- * consumer. It is deferred to the first type that actually needs it (Workstream B), designed against
- * that concrete consumer rather than guessed now.
  *
  * @opensearch.api
  */
@@ -69,11 +62,20 @@ public abstract class RetrieverBuilder implements ToXContentObject {
     public abstract void validate();
 
     /**
-     * Top-down leaf preparation. A hook for a node to prepare its subtree before execution. No-op for a
-     * lone leaf in A3a; compound/transformer types (Workstream B) use it to propagate preparation to
-     * their leaves.
+     * Top-down leaf preparation. Threads a {@link LeafPreparationContext} down to the leaves so each leg
+     * fetches exactly the depth its enclosing fusion needs.
+     * <p>
+     * A fusion compound (e.g. {@link RankFusionRetrieverBuilder}) requires every leg in its subtree to
+     * contribute exactly {@code rank_window_size} candidates — otherwise the fused window is incomplete
+     * and its membership/order is not reproducible across requests (which breaks pagination). To enforce
+     * that, a fusion node derives {@link LeafPreparationContext#underFusion(int)} for its children; every
+     * node below propagates the context unchanged. A leaf ({@link StandardRetrieverBuilder}) uses the
+     * inherited window as its fetch depth when the context is fusion-governed, and rejects an explicit
+     * {@code size} in that case.
+     *
+     * @param context the top-down preparation state (see {@link LeafPreparationContext})
      */
-    public abstract void prepareLeaves();
+    public abstract void prepareLeaves(LeafPreparationContext context);
 
     /**
      * The name of this retriever type (for error messages / debugging).

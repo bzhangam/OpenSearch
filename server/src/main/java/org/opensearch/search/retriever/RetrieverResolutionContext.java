@@ -20,22 +20,20 @@ import org.opensearch.search.profile.SearchProfileShardResults;
 
 /**
  * The response-side accumulator for one retriever request. Created before dispatch and threaded through
- * the bottom-up cascade, it serves double duty (LLD → Resolution context): the write channel nodes
+ * the bottom-up cascade, it serves double duty: the write channel nodes
  * populate <i>during</i> resolution, and the holder consumed <i>once</i> at the end to patch the final
  * response with what the {@code RankDocsQuery} search could not compute itself.
  * <p>
- * <b>A3b/A3c scope.</b> Today the context carries the read flags and the stashed
+ * <b>Scope.</b> Today the context carries the read flags and the stashed
  * {@link #globalLegResponse} (aggregations / {@code track_total_hits} computed over the union of leaf
- * queries), plus the framework-managed PIT id when one was opened. The per-doc {@code explanations}, the
- * {@code shardProfiles}, the per-node {@code profile} timings, and {@code legExtraInfo} named in the LLD
- * are <b>reserved for A3d</b> (explain / profile) — a new type or A3d adds them here without reworking
- * this accumulator or the executor. Keeping one object now is what lets A3d extend rather than replace.
+ * queries), plus the framework-managed PIT id when one was opened. Additional accumulators (per-doc
+ * explanations, shard profiles, per-node profile timings, per-leg extra info) can be added here without
+ * reworking this accumulator or the executor — keeping one object now lets those extend rather than replace.
  * <p>
  * <b>Thread-safety.</b> The only writer today is the executor's global-leg callback (a single write of
  * {@link #globalLegResponse} before the 2-way join fires the outer listener) and the PIT-id set (once,
  * before the cascade). The atomic join in {@link RetrieverExecutor} publishes both before {@link #merge}
- * reads them. When A3d adds per-node writes, those channels must be concurrent, node-keyed structures
- * (see the LLD Thread-safety note).
+ * reads them. Any future per-node writes would need concurrent, node-keyed structures.
  *
  * @opensearch.api
  */

@@ -80,6 +80,10 @@ JDK 21 is the minimum supported. `JAVA_HOME` must be set.
 - Run `./gradlew spotlessJavaCheck` to check, `./gradlew spotlessApply` to fix.
 - 4-space indent, 140-character line width.
 - Wildcard imports are forbidden.
+- Reference types by their simple name with a top-level `import`; do not use fully-qualified names inline
+  (e.g. use `SearchService.DEFAULT_SIZE` with `import org.opensearch.search.SearchService;`, not
+  `org.opensearch.search.SearchService.DEFAULT_SIZE` in the body). The only exceptions are disambiguating
+  two same-named classes, or Javadoc `{@link}` to a type not otherwise imported.
 - Prefer `foo == false` over `!foo` for readability.
 
 ## Adding Dependencies

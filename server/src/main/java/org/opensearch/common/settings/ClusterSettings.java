@@ -163,6 +163,7 @@ import org.opensearch.repositories.fs.FsRepository;
 import org.opensearch.rest.BaseRestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.search.SearchService;
+import org.opensearch.search.retriever.SearchSourceBuilderRetrieverIntegration;
 import org.opensearch.search.aggregations.MultiBucketConsumerService;
 import org.opensearch.search.aggregations.metrics.CardinalityAggregator;
 import org.opensearch.search.backpressure.settings.NodeDuressSettings;
@@ -593,6 +594,10 @@ public final class ClusterSettings extends AbstractScopedSettings {
                 SearchService.MAX_OPEN_SCROLL_CONTEXT,
                 SearchService.MAX_OPEN_PIT_CONTEXT,
                 SearchService.MAX_PIT_KEEPALIVE_SETTING,
+                SearchSourceBuilderRetrieverIntegration.MAX_LEAF_COUNT_SETTING,
+                SearchSourceBuilderRetrieverIntegration.MAX_DEPTH_SETTING,
+                SearchSourceBuilderRetrieverIntegration.PIT_KEEP_ALIVE_SETTING,
+                SearchSourceBuilderRetrieverIntegration.MAX_CONCURRENT_LEG_SEARCHES_SETTING,
                 SearchService.MAX_AGGREGATION_REWRITE_FILTERS,
                 SearchService.AGGREGATION_REWRITE_FILTER_SEGMENT_THRESHOLD,
                 SearchService.INDICES_MAX_CLAUSE_COUNT_SETTING,
