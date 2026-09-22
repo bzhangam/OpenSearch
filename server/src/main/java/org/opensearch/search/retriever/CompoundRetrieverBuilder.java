@@ -11,12 +11,17 @@ package org.opensearch.search.retriever;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.transport.client.Client;
 
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Base class for <b>compound</b> retrievers — nodes that fuse the rankings of two or more child
@@ -134,5 +139,71 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
             union.should(child.extractAggregationQuery());
         }
         return union;
+    }
+
+    /**
+     * A document's identity across fusion: {@code (index, _id)}. Within one index an {@code _id} lives on a
+     * single shard, so shardId is implied; across indices the same {@code _id} is a distinct document.
+     */
+    protected static String fusionKey(RetrieverCandidate candidate) {
+        return candidate.index() + "\u0000" + candidate.id();
+    }
+
+    /**
+     * Shared fusion tail used by every concrete compound once it has computed a fused score per document.
+     * Sorts by descending fused score (stable — ties keep first-seen order, which is deterministic given
+     * deterministic child inputs), truncates to {@code windowSize}, applies an optional fused
+     * {@code minScore} threshold, and renumbers positions {@code 0..n} in the fused order.
+     *
+     * @param fusedScore     fused score per fusion key, in first-seen insertion order (use a LinkedHashMap)
+     * @param representative one representative candidate per fusion key, to carry identity into the result
+     * @param windowSize     truncate the fused ranking to this many documents
+     * @param minScore       optional fused-score floor; documents scoring below it are dropped (nullable)
+     * @return the fused, ordered, truncated candidate list with positions renumbered
+     */
+    protected static List<RetrieverCandidate> finalizeFusion(
+        Map<String, Double> fusedScore,
+        Map<String, RetrieverCandidate> representative,
+        int windowSize,
+        Float minScore
+    ) {
+        List<String> orderedKeys = new ArrayList<>(fusedScore.keySet());
+        orderedKeys.sort(Comparator.comparingDouble((String k) -> fusedScore.get(k)).reversed());
+
+        List<RetrieverCandidate> fused = new ArrayList<>(Math.min(orderedKeys.size(), windowSize));
+        int position = 0;
+        for (String key : orderedKeys) {
+            if (position >= windowSize) {
+                break;
+            }
+            float score = (float) (double) fusedScore.get(key);
+            if (minScore != null && score < minScore) {
+                continue;
+            }
+            fused.add(representative.get(key).withScoreAndPosition(score, position));
+            position++;
+        }
+        return fused;
+    }
+
+    /**
+     * Write the children as the {@code retrievers} array. Each child's {@link #toXContent} emits a
+     * <b>named</b> object ({@code {"<type>": {...}}}), which is only valid inside an enclosing object — so
+     * each child must be wrapped in an anonymous object here to produce the {@code [{"standard":{...}}, ...]}
+     * shape that {@link RetrieverBuilder#parseInnerRetrieverBuilder} reads back. Writing the child directly
+     * into the array would emit a field name with no enclosing object and fail serialization.
+     *
+     * @param builder    the content builder, positioned to receive a field
+     * @param params     xcontent params passed through to each child
+     * @param fieldName  the array field name (each concrete compound owns its own constant)
+     */
+    protected void writeChildrenArray(XContentBuilder builder, ToXContent.Params params, String fieldName) throws IOException {
+        builder.startArray(fieldName);
+        for (RetrieverBuilder child : children) {
+            builder.startObject();
+            child.toXContent(builder, params);
+            builder.endObject();
+        }
+        builder.endArray();
     }
 }

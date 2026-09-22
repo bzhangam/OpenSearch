@@ -85,3 +85,30 @@ PUT /_search/pipeline/rrf-pipeline {"phase_results_processors":[{"score-ranker-p
 # rank_fusion: POST /idx/_search {"retriever":{"rank_fusion":{"retrievers":[{"standard":{"query":<legA>}},{"standard":{"query":<legB>}}],"rank_window_size":200,"rank_constant":60}},"size":10}
 ```
 Use two comparably-expensive `script_score` legs to observe the crossover.
+
+## score_fusion vs classic hybrid (min_max + arithmetic_mean)
+
+The `score_fusion` retriever min-max normalizes each leg's `_score`s, then combines them with a weighted
+arithmetic mean over all legs (an absent leg contributes 0 to the numerator; its weight still counts in the
+denominator) — the same math as the classic hybrid query's `normalization-processor` with `min_max` +
+`arithmetic_mean`.
+
+**Ranking parity** (verified on a local cluster, two `match` legs): with matching configuration both paths
+return identical ids, order, and scores.
+
+| Config | classic hybrid (min_max) | score_fusion | Match |
+|---|---|---|---|
+| equal weights | `2:0.5005, 1:0.5, 4:0.5, 5:0.0005` | `2:0.5005, 1:0.5, 4:0.5, 5:0.0005` | identical |
+| weighted | `[0.6667, 0.3333]` → `1:0.66667, 4:0.66667, 2:0.334, 5:0.00033` | `[2.0, 1.0]` → same | identical |
+
+**Weights UX difference:** the classic hybrid requires weights in `[0.0, 1.0]` that sum to `1.0`;
+`score_fusion` accepts any positive weights and normalizes by their sum, so only the *ratio* matters
+(`[2,1]` ≡ `[0.6667, 0.3333]`).
+
+**Latency** (20k docs, 128-dim, single node, `took` p50): the same execution-model crossover as `rank_fusion`
+— the fusion technique does not change it.
+
+| Scenario | classic hybrid (min_max) | score_fusion | Winner |
+|---|---|---|---|
+| Two cheap `match` legs | **6 ms** | 8 ms | hybrid (round-trip dominates) |
+| Two balanced expensive `script_score` legs (~120 ms each) | 350 ms | **268 ms** | score_fusion (parallel legs) |

@@ -13,7 +13,6 @@ import org.opensearch.core.xcontent.XContentParser;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -85,7 +84,16 @@ public class RankFusionRetrieverBuilder extends CompoundRetrieverBuilder {
     private static void validateRankConstant(int rankConstant) {
         if (rankConstant < MIN_RANK_CONSTANT || rankConstant > MAX_RANK_CONSTANT) {
             throw new IllegalArgumentException(
-                "[" + NAME + "] [" + RANK_CONSTANT_FIELD + "] must be in [" + MIN_RANK_CONSTANT + ", " + MAX_RANK_CONSTANT + "], got " + rankConstant
+                "["
+                    + NAME
+                    + "] ["
+                    + RANK_CONSTANT_FIELD
+                    + "] must be in ["
+                    + MIN_RANK_CONSTANT
+                    + ", "
+                    + MAX_RANK_CONSTANT
+                    + "], got "
+                    + rankConstant
             );
         }
     }
@@ -127,7 +135,7 @@ public class RankFusionRetrieverBuilder extends CompoundRetrieverBuilder {
         for (List<RetrieverCandidate> childResult : childResults) {
             int rank = 1; // 1-based rank within this child's ranking
             for (RetrieverCandidate candidate : childResult) {
-                String key = key(candidate);
+                String key = fusionKey(candidate);
                 double contribution = 1.0 / (rankConstant + rank);
                 fusedScore.merge(key, contribution, Double::sum);
                 representative.putIfAbsent(key, candidate);
@@ -135,41 +143,13 @@ public class RankFusionRetrieverBuilder extends CompoundRetrieverBuilder {
             }
         }
 
-        // Sort by descending fused score; stable on ties (LinkedHashMap insertion order preserved by a
-        // stable sort over the insertion-ordered key list).
-        List<String> orderedKeys = new ArrayList<>(fusedScore.keySet());
-        orderedKeys.sort(Comparator.comparingDouble((String k) -> fusedScore.get(k)).reversed());
-
-        List<RetrieverCandidate> fused = new ArrayList<>(Math.min(orderedKeys.size(), rankWindowSize));
-        int position = 0;
-        for (String key : orderedKeys) {
-            if (position >= rankWindowSize) {
-                break;
-            }
-            float score = (float) (double) fusedScore.get(key);
-            if (minScore != null && score < minScore) {
-                continue;
-            }
-            fused.add(representative.get(key).withScoreAndPosition(score, position));
-            position++;
-        }
-        return fused;
-    }
-
-    private static String key(RetrieverCandidate candidate) {
-        // (index, _id) — a document's identity across fusion. Within one index an _id lives on one shard,
-        // so shardId is implied; across indices the same _id is a distinct document.
-        return candidate.index() + "\u0000" + candidate.id();
+        return finalizeFusion(fusedScore, representative, rankWindowSize, minScore);
     }
 
     @Override
     public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
         builder.startObject(NAME);
-        builder.startArray(RETRIEVERS_FIELD);
-        for (RetrieverBuilder child : children) {
-            child.toXContent(builder, params);
-        }
-        builder.endArray();
+        writeChildrenArray(builder, params, RETRIEVERS_FIELD);
         if (rankConstant != DEFAULT_RANK_CONSTANT) {
             builder.field(RANK_CONSTANT_FIELD, rankConstant);
         }

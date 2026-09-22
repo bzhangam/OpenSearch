@@ -8,9 +8,12 @@
 
 package org.opensearch.search.retriever;
 
+import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.index.query.MatchAllQueryBuilder;
 import org.opensearch.search.SearchModule;
@@ -209,5 +212,32 @@ public class RankFusionRetrieverBuilderTests extends OpenSearchTestCase {
         XContentParser parser = createParser(jsonXContent, json);
         parser.nextToken();
         expectThrows(IllegalArgumentException.class, () -> RankFusionRetrieverBuilder.fromXContent(parser));
+    }
+
+    public void testToXContentRoundTrip() throws Exception {
+        // Full serialize -> parse round-trip. Children are written as wrapped objects inside the retrievers
+        // array; writing them unwrapped emits a field name with no enclosing object and fails serialization.
+        RankFusionRetrieverBuilder rf = rankFusion();
+        rf.setRankConstant(42);
+        rf.setRankWindowSize(25);
+        rf.setMinScore(0.1f);
+
+        XContentBuilder builder = XContentFactory.jsonBuilder();
+        builder.startObject();
+        rf.toXContent(builder, ToXContent.EMPTY_PARAMS);
+        builder.endObject();
+        String rendered = builder.toString();
+        assertTrue(rendered, rendered.contains("\"retrievers\":[{\"standard\":"));
+
+        XContentParser parser = createParser(jsonXContent, rendered);
+        parser.nextToken(); // START_OBJECT (wrapper)
+        parser.nextToken(); // FIELD_NAME rank_fusion
+        parser.nextToken(); // START_OBJECT (inside rank_fusion)
+        RankFusionRetrieverBuilder reparsed = RankFusionRetrieverBuilder.fromXContent(parser);
+
+        assertEquals(2, reparsed.getChildRetrievers().size());
+        assertEquals(42, reparsed.getRankConstant());
+        assertEquals(25, reparsed.getRankWindowSize());
+        assertEquals(0.1f, reparsed.getMinScore(), 0f);
     }
 }

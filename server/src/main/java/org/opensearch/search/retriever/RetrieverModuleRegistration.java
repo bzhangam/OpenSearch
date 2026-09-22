@@ -66,6 +66,14 @@ public final class RetrieverModuleRegistration {
             }
         });
 
+        builder.register(ScoreFusionRetrieverBuilder.NAME, parser -> {
+            try {
+                return ScoreFusionRetrieverBuilder.fromXContent(parser);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Failed to parse [" + ScoreFusionRetrieverBuilder.NAME + "] retriever", e);
+            }
+        });
+
         // Plugin-provided retriever types (RetrieverPlugin SPI).
         for (SearchPlugin plugin : plugins) {
             if (plugin instanceof RetrieverPlugin) {
