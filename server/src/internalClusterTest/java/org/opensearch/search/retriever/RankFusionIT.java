@@ -80,13 +80,24 @@ public class RankFusionIT extends AbstractRetrieverIT {
 
     public void testRankWindowSizeTruncatesFusedOutput() throws Exception {
         createProducts(3);
-        // rank_window_size 2 → the fused output holds at most 2 docs (the two top-ranked, which are the
-        // both-legs docs a, b). Over-reading with size 10 returns the available slice (no 400).
+        // rank_window_size governs BOTH each leg's fetch depth AND the final fused truncation. With a
+        // window of 2, each leg contributes only its top-2 candidates, so which documents reach fusion is
+        // bm25/tie-break dependent (the brand:acme term leg scores a, b, e identically, so its top-2 is an
+        // arbitrary 2 of them). The deterministic, cluster-independent guarantees of truncation are:
+        // (1) the fused output is capped at rank_window_size (2), even though top-level size is 10;
+        // (2) over-reading (size 10 > window 2) returns the available slice, not a 400 / shard failure;
+        // (3) every returned document is a real member of the union of the two legs' matches.
+        // Which specific docs survive a size-2 window is NOT asserted — it is not a stable property. The
+        // both-legs-outrank-single-leg ordering is covered by testTwoLegRrfFusionReturnsUnionRanked (which
+        // uses the default window, so both legs contribute their full match set).
         SearchResponse r = rankFusionSearch(twoLegRankFusion(",\"rank_window_size\":2"), SearchType.DFS_QUERY_THEN_FETCH);
         assertEquals(0, r.getFailedShards());
         assertEquals("fused window capped at 2", 2, r.getHits().getHits().length);
         List<String> ids = ids(r);
-        assertTrue("the two both-legs docs survive the window", ids.contains("a") && ids.contains("b"));
+        List<String> union = List.of("a", "b", "d", "e", "f"); // title:headphones {a,b,d,f} ∪ brand:acme {a,b,e}
+        for (String id : ids) {
+            assertTrue("returned doc [" + id + "] is a member of the fused union", union.contains(id));
+        }
     }
 
     public void testFusedMinScoreDropsLowScorers() throws Exception {
