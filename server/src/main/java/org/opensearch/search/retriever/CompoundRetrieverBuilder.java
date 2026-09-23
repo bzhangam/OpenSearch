@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.action.ActionListener;
@@ -129,6 +130,46 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
             }
         }
         return new RankDocsQueryBuilder(window);
+    }
+
+    @Override
+    public Explanation buildExplanation(String index, String id) {
+        // This node contributed the document only if it survived into the fused window. Find its fused
+        // score there, then delegate the formula + per-child detail assembly to the concrete compound.
+        if (resolvedResult != null) {
+            for (RetrieverCandidate candidate : resolvedResult) {
+                if (candidate.index().equals(index) && candidate.id().equals(id)) {
+                    return buildFusionExplanation(index, id, candidate.score());
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Assemble this compound's explanation for a document that survived into its fused window: a root
+     * describing the fusion formula (and its configuration) with one detail per child. Concrete compounds
+     * use {@link #getChildExplanation(RetrieverBuilder, String, String)} to fetch each child's subtree and
+     * describe that child's contribution (e.g. an RRF rank term or a normalized-and-weighted score).
+     *
+     * @param index      the document's index name
+     * @param id         the document's {@code _id}
+     * @param fusedScore this node's fused score for the document (matches the value rendered at the root)
+     * @return the explanation subtree rooted at this compound for the document
+     */
+    protected abstract Explanation buildFusionExplanation(String index, String id, float fusedScore);
+
+    /**
+     * Fetch a child's explanation subtree for a document, or a neutral "not present in this leg" node when
+     * the child did not contribute the document. Never returns {@code null}, so a concrete compound can
+     * always nest a child detail (making absent legs explicit in the tree).
+     */
+    protected Explanation getChildExplanation(RetrieverBuilder child, String index, String id) {
+        Explanation childExplanation = child.buildExplanation(index, id);
+        if (childExplanation != null) {
+            return childExplanation;
+        }
+        return Explanation.noMatch("not present in this leg");
     }
 
     @Override

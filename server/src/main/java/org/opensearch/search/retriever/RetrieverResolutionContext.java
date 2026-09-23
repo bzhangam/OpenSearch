@@ -8,15 +8,19 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.TotalHits;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.search.SearchResponseSections;
 import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.search.SearchHit;
 import org.opensearch.search.SearchHits;
 import org.opensearch.search.aggregations.Aggregations;
 import org.opensearch.search.aggregations.InternalAggregations;
 import org.opensearch.search.internal.InternalSearchResponse;
 import org.opensearch.search.profile.SearchProfileShardResults;
+
+import java.util.Map;
 
 /**
  * The response-side accumulator for one retriever request. Created before dispatch and threaded through
@@ -48,6 +52,10 @@ public class RetrieverResolutionContext {
     // The framework-managed PIT id, if the executor opened one (null when user-supplied or opted out).
     private volatile String frameworkManagedPitId;
 
+    // Coordinator-assembled per-document explanations, keyed by (index,_id). Populated once after tree
+    // resolution when explain was requested; null/empty otherwise. Merged onto the final hits.
+    private volatile Map<String, Explanation> explanations;
+
     /**
      * @param trackTotalHitsRequested whether the user explicitly requested {@code track_total_hits}; only
      *                                then does {@link #merge} overwrite the response total from the global
@@ -74,6 +82,14 @@ public class RetrieverResolutionContext {
         return frameworkManagedPitId;
     }
 
+    /**
+     * Set the coordinator-assembled explanations, keyed by {@code index + '\u0000' + _id}. Called once by
+     * the executor after tree resolution when {@code explain: true} was requested.
+     */
+    public void setExplanations(Map<String, Explanation> explanations) {
+        this.explanations = explanations;
+    }
+
     public boolean isTrackTotalHitsRequested() {
         return trackTotalHitsRequested;
     }
@@ -88,11 +104,15 @@ public class RetrieverResolutionContext {
      * case: no aggs and {@code track_total_hits} disabled — the default for a retriever).
      */
     public SearchResponse merge(SearchResponse finalResponse) {
+        // Patch per-hit _explanation first (independent of the global leg). When explain was requested the
+        // coordinator-assembled tree replaces whatever the final RankDocsQuery search produced.
+        SearchResponse withExplanations = applyExplanations(finalResponse);
+
         if (globalLegResponse == null) {
-            return finalResponse;
+            return withExplanations;
         }
 
-        SearchHits finalHits = finalResponse.getHits();
+        SearchHits finalHits = withExplanations.getHits();
         SearchHits mergedHits = finalHits;
         if (trackTotalHitsRequested && globalLegResponse.getHits() != null && globalLegResponse.getHits().getTotalHits() != null) {
             // Overwrite the total with the union match count from the global leg; keep the final search's
@@ -109,23 +129,72 @@ public class RetrieverResolutionContext {
         SearchResponseSections sections = new InternalSearchResponse(
             mergedHits,
             internalAggregations,
-            finalResponse.getSuggest(),
-            finalResponse.getProfileResults() == null ? null : new SearchProfileShardResults(finalResponse.getProfileResults()),
-            finalResponse.isTimedOut(),
-            finalResponse.isTerminatedEarly(),
-            finalResponse.getNumReducePhases()
+            withExplanations.getSuggest(),
+            withExplanations.getProfileResults() == null ? null : new SearchProfileShardResults(withExplanations.getProfileResults()),
+            withExplanations.isTimedOut(),
+            withExplanations.isTerminatedEarly(),
+            withExplanations.getNumReducePhases()
         );
 
         return new SearchResponse(
             sections,
-            finalResponse.getScrollId(),
-            finalResponse.getTotalShards(),
-            finalResponse.getSuccessfulShards(),
-            finalResponse.getSkippedShards(),
-            finalResponse.getTook().millis(),
-            finalResponse.getShardFailures(),
-            finalResponse.getClusters(),
-            finalResponse.pointInTimeId()
+            withExplanations.getScrollId(),
+            withExplanations.getTotalShards(),
+            withExplanations.getSuccessfulShards(),
+            withExplanations.getSkippedShards(),
+            withExplanations.getTook().millis(),
+            withExplanations.getShardFailures(),
+            withExplanations.getClusters(),
+            withExplanations.pointInTimeId()
+        );
+    }
+
+    /**
+     * Replace each hit's {@code _explanation} with the coordinator-assembled tree keyed by
+     * {@code (index,_id)}. Returns the response unchanged when no explanations were assembled (explain not
+     * requested) or there are no hits. A hit with no assembled explanation is left untouched.
+     */
+    private SearchResponse applyExplanations(SearchResponse response) {
+        Map<String, Explanation> assembled = explanations;
+        if (assembled == null || assembled.isEmpty()) {
+            return response;
+        }
+        SearchHits hits = response.getHits();
+        if (hits == null || hits.getHits() == null || hits.getHits().length == 0) {
+            return response;
+        }
+
+        SearchHit[] source = hits.getHits();
+        SearchHit[] patched = new SearchHit[source.length];
+        for (int i = 0; i < source.length; i++) {
+            SearchHit hit = source[i];
+            Explanation explanation = assembled.get(hit.getIndex() + "\u0000" + hit.getId());
+            if (explanation != null) {
+                hit.explanation(explanation);
+            }
+            patched[i] = hit;
+        }
+        SearchHits mergedHits = new SearchHits(patched, hits.getTotalHits(), hits.getMaxScore());
+
+        SearchResponseSections sections = new InternalSearchResponse(
+            mergedHits,
+            response.getAggregations() instanceof InternalAggregations ? (InternalAggregations) response.getAggregations() : null,
+            response.getSuggest(),
+            response.getProfileResults() == null ? null : new SearchProfileShardResults(response.getProfileResults()),
+            response.isTimedOut(),
+            response.isTerminatedEarly(),
+            response.getNumReducePhases()
+        );
+        return new SearchResponse(
+            sections,
+            response.getScrollId(),
+            response.getTotalShards(),
+            response.getSuccessfulShards(),
+            response.getSkippedShards(),
+            response.getTook().millis(),
+            response.getShardFailures(),
+            response.getClusters(),
+            response.pointInTimeId()
         );
     }
 }

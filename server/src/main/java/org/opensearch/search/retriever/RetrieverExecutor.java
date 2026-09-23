@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.action.search.CreatePitAction;
 import org.opensearch.action.search.CreatePitRequest;
 import org.opensearch.action.search.DeletePitAction;
@@ -25,6 +26,9 @@ import org.opensearch.search.builder.PointInTimeBuilder;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.transport.client.Client;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -186,8 +190,13 @@ public class RetrieverExecutor {
                 return;
             }
             // Phase 2: prepare leaves top-down. The root context is not fusion-governed; a fusion node in
-            // the tree derives an underFusion(...) context and pushes its window down to its subtree.
-            root.prepareLeaves(LeafPreparationContext.root());
+            // the tree derives an underFusion(...) context and pushes its window down to its subtree. The
+            // request-level explain flag propagates unchanged so each leg runs its sub-search with explain.
+            boolean explain = originalRequest != null
+                && originalRequest.source() != null
+                && originalRequest.source().explain() != null
+                && originalRequest.source().explain();
+            root.prepareLeaves(LeafPreparationContext.root(explain));
 
             // Two independent async flows joined at the end: (1) tree resolution (the ranking) and, when
             // present, (2) the global leg (aggs / track_total_hits). The global leg does NOT gate the tree.
@@ -224,10 +233,38 @@ public class RetrieverExecutor {
             // and PIT ops use the raw client — the cap is scoped to the tree's leaf legs, per its name.
             int maxConcurrentLegSearches = SearchSourceBuilderRetrieverIntegration.getMaxConcurrentLegSearches();
             Client legClient = maxConcurrentLegSearches > 0 ? new LegConcurrencyLimitingClient(client, maxConcurrentLegSearches) : client;
-            root.resolve(legClient, indices, originalRequest, legDone);
+            ActionListener<Void> resolveDone = explain ? ActionListener.wrap(v -> {
+                // Tree is resolved: assemble the per-document explanation tree over the fused window and
+                // stash it on the context so merge() can patch each hit's _explanation. Read-only over the
+                // resolved candidates; no I/O.
+                context.setExplanations(buildExplanations());
+                legDone.onResponse(null);
+            }, legDone::onFailure) : legDone;
+            root.resolve(legClient, indices, originalRequest, resolveDone);
         } catch (Exception e) {
             listener.onFailure(e);
         }
+    }
+
+    /**
+     * Assemble the coordinator-side explanation tree for every document in the resolved (fused) window,
+     * keyed by {@code index + '\u0000' + _id}. Called once after resolution, only when explain was
+     * requested. Read-only over the already-resolved candidates — the per-node {@code buildExplanation}
+     * implementations look each document up in their own resolved output.
+     */
+    private Map<String, Explanation> buildExplanations() {
+        List<RetrieverCandidate> window = root.getResolvedResult();
+        if (window == null || window.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Explanation> explanations = new LinkedHashMap<>(window.size());
+        for (RetrieverCandidate candidate : window) {
+            Explanation explanation = root.buildExplanation(candidate.index(), candidate.id());
+            if (explanation != null) {
+                explanations.put(candidate.index() + "\u0000" + candidate.id(), explanation);
+            }
+        }
+        return explanations;
     }
 
     /** The global leg: the union of leaf queries, size 0, carrying the user's aggs / track_total_hits. */

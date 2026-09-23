@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 
@@ -144,6 +145,50 @@ public class RankFusionRetrieverBuilder extends CompoundRetrieverBuilder {
         }
 
         return finalizeFusion(fusedScore, representative, rankWindowSize, minScore);
+    }
+
+    /**
+     * RRF explanation: a root describing the fusion (with {@code rank_constant}) and one detail per child.
+     * For a child that ranked the document, the detail is its {@code 1/(rank_constant+rank)} contribution
+     * with the child's own explanation nested beneath; for a child that did not, the detail is a
+     * zero-valued "not present" node. The child ranks are recomputed from each child's resolved output
+     * (1-based position), matching exactly what {@link #fuse} summed.
+     */
+    @Override
+    protected Explanation buildFusionExplanation(String index, String id, float fusedScore) {
+        List<Explanation> legDetails = new ArrayList<>(children.size());
+        for (int legIndex = 0; legIndex < children.size(); legIndex++) {
+            RetrieverBuilder child = children.get(legIndex);
+            int rank = rankOf(child, index, id); // 1-based, or -1 if the child did not rank this doc
+            if (rank > 0) {
+                double contribution = 1.0 / (rankConstant + rank);
+                legDetails.add(
+                    Explanation.match(
+                        (float) contribution,
+                        "leg " + legIndex + ": 1/(" + rankConstant + "+" + rank + ") = " + contribution + " [rank " + rank + "]",
+                        getChildExplanation(child, index, id)
+                    )
+                );
+            } else {
+                legDetails.add(Explanation.noMatch("leg " + legIndex + ": not present"));
+            }
+        }
+        return Explanation.match(fusedScore, "rank_fusion [rank_constant=" + rankConstant + "]", legDetails);
+    }
+
+    /** The document's 1-based rank in a child's resolved output, or -1 if the child did not rank it. */
+    private static int rankOf(RetrieverBuilder child, String index, String id) {
+        List<RetrieverCandidate> childResult = child.getResolvedResult();
+        if (childResult == null) {
+            return -1;
+        }
+        for (int i = 0; i < childResult.size(); i++) {
+            RetrieverCandidate candidate = childResult.get(i);
+            if (candidate.index().equals(index) && candidate.id().equals(id)) {
+                return i + 1;
+            }
+        }
+        return -1;
     }
 
     @Override

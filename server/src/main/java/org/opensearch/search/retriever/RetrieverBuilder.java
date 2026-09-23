@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.common.util.concurrent.CountDown;
@@ -170,6 +171,21 @@ public abstract class RetrieverBuilder implements ToXContentObject {
      * executor / the {@code SearchSourceBuilder} rewrite wiring.
      */
     public abstract QueryBuilder toQueryBuilder();
+
+    /**
+     * Assemble this node's contribution to a document's {@code _explanation}, after the tree is fully
+     * resolved. Only invoked when the request set {@code explain: true}. A leaf returns the Lucene
+     * explanation its sub-search produced for the document; a compound describes its fusion formula with
+     * the per-child explanations nested beneath; a transformer wraps its child's explanation. The
+     * document is identified by {@code (index, id)} — the same identity used for fusion keying — so a node
+     * looks up the document in its own resolved output.
+     *
+     * @param index the document's index name
+     * @param id    the document's {@code _id}
+     * @return the explanation subtree rooted at this node for that document, or {@code null} if this node
+     *         did not contribute the document to its resolved output
+     */
+    public abstract Explanation buildExplanation(String index, String id);
 
     /**
      * The query used for the global leg (aggregations / {@code track_total_hits}) — the union of all leaf

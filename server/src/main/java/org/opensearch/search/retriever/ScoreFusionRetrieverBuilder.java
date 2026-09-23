@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 
@@ -209,6 +210,62 @@ public class ScoreFusionRetrieverBuilder extends CompoundRetrieverBuilder {
         }
 
         return finalizeFusion(fusedScore, representative, rankWindowSize, minScore);
+    }
+
+    /**
+     * Score-fusion explanation: a root describing the min_max normalization + weighted arithmetic-mean
+     * combination, with one detail per child. For a child that ranked the document, the detail shows
+     * {@code norm=<v> (raw=<r>, min=<mn>, max=<mx>), weight=<w>} with the child's own explanation nested
+     * beneath; for a child that did not, a zero-valued "not present" node. The per-leg min/max and the
+     * document's raw score are recomputed from each child's resolved output, matching {@link #fuse}.
+     */
+    @Override
+    protected Explanation buildFusionExplanation(String index, String id, float fusedScore) {
+        List<Explanation> legDetails = new ArrayList<>(children.size());
+        for (int legIndex = 0; legIndex < children.size(); legIndex++) {
+            RetrieverBuilder child = children.get(legIndex);
+            double weight = weightFor(legIndex);
+            List<RetrieverCandidate> childResult = child.getResolvedResult();
+            RetrieverCandidate docInLeg = findCandidate(childResult, index, id);
+            if (docInLeg == null) {
+                legDetails.add(Explanation.noMatch("leg " + legIndex + ": not present (weight=" + (float) weight + ")"));
+                continue;
+            }
+            float[] minMax = minMax(childResult);
+            double norm = normalize(docInLeg.score(), minMax[0], minMax[1]);
+            double weighted = weight * norm;
+            String description = "leg "
+                + legIndex
+                + ": norm="
+                + (float) norm
+                + " (raw="
+                + docInLeg.score()
+                + ", min="
+                + minMax[0]
+                + ", max="
+                + minMax[1]
+                + "), weight="
+                + (float) weight;
+            legDetails.add(Explanation.match((float) weighted, description, getChildExplanation(child, index, id)));
+        }
+        return Explanation.match(
+            fusedScore,
+            "score_fusion(" + normalization + ", " + combination + ") [normalized by total leg weight]",
+            legDetails
+        );
+    }
+
+    /** The candidate for {@code (index,id)} in a child's resolved output, or {@code null} if absent. */
+    private static RetrieverCandidate findCandidate(List<RetrieverCandidate> childResult, String index, String id) {
+        if (childResult == null) {
+            return null;
+        }
+        for (RetrieverCandidate candidate : childResult) {
+            if (candidate.index().equals(index) && candidate.id().equals(id)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private double weightFor(int childIndex) {

@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -66,6 +67,11 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
             @Override
             public QueryBuilder toQueryBuilder() {
                 return new RankDocsQueryBuilder(Collections.emptyList());
+            }
+
+            @Override
+            public Explanation buildExplanation(String index, String id) {
+                return null;
             }
 
             @Override

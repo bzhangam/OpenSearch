@@ -1291,6 +1291,10 @@ public final class SearchSourceBuilder implements Writeable, ToXContentObject, R
                     // wrapped response listener can call context.merge(finalResponse) to add back the
                     // global-leg aggregations / total the final RankDocsQuery search must not recompute.
                     resolved.retrieverResolutionContext = this.retrieverResolutionContext;
+                    // The final RankDocsQuery search must NOT run with explain: RankDocsQuery has no scoring
+                    // of its own to explain and throws if asked. The user-facing _explanation is assembled on
+                    // the coordinator (from each leg's explanation) and spliced onto the hits by merge().
+                    resolved.explain = false;
                     // The final RankDocsQuery search only matches the fused window, so it must NOT recompute
                     // aggregations or the total — those come from the global leg (union of leaf queries) and
                     // are spliced in by merge(). Clear aggs here; track_total_hits is handled just below.

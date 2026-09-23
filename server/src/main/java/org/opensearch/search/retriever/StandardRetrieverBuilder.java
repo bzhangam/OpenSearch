@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.common.annotation.PublicApi;
@@ -68,6 +69,10 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
 
     // Fetch depth handed down by a fusion ancestor during prepareLeaves; NO_WINDOW = not fusion-governed.
     private int effectiveWindow = LeafPreparationContext.NO_WINDOW;
+
+    // Request-level explain flag captured during prepareLeaves; when true this leg's sub-search runs with
+    // Lucene explain enabled so per-hit explanations flow into the coordinator-assembled explanation tree.
+    private boolean explain = false;
 
     /** Set by the executor after this leaf's sub-search returns — its dispatched ranked candidates. */
     private List<RetrieverCandidate> searchResult;
@@ -237,7 +242,7 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
                 // A hit must carry its shard for the (index, shardId) scoping the RankDocsQuery relies on.
                 throw new IllegalStateException("retriever leg hit [" + hit.getId() + "] has no shard target");
             }
-            candidates.add(new RetrieverCandidate(hit.getIndex(), shardId, hit.getId(), hit.getScore(), position++));
+            candidates.add(new RetrieverCandidate(hit.getIndex(), shardId, hit.getId(), hit.getScore(), position++, hit.getExplanation()));
         }
         return candidates;
     }
@@ -253,6 +258,27 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
             }
         }
         return new RankDocsQueryBuilder(window);
+    }
+
+    @Override
+    public Explanation buildExplanation(String index, String id) {
+        // A leaf's contribution is exactly the Lucene explanation its sub-search produced for this document.
+        // Find the candidate in this leg's resolved output by (index, _id); return its captured explanation.
+        if (resolvedResult != null) {
+            for (RetrieverCandidate candidate : resolvedResult) {
+                if (candidate.index().equals(index) && candidate.id().equals(id)) {
+                    Explanation legExplanation = candidate.explanation();
+                    if (legExplanation != null) {
+                        return legExplanation;
+                    }
+                    // explain was not enabled on the leg (or Lucene returned none); fall back to the score
+                    // so the tree still renders a value rather than a null hole.
+                    return Explanation.match(candidate.score(), "standard retriever leg score (no Lucene explanation available)");
+                }
+            }
+        }
+        // This leg did not contribute the document to its window.
+        return null;
     }
 
     @Override
@@ -288,6 +314,7 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
 
     @Override
     public void prepareLeaves(LeafPreparationContext context) {
+        this.explain = context.isExplain();
         if (context.isFusionGoverned()) {
             if (size != null) {
                 throw new IllegalArgumentException(
@@ -343,6 +370,13 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
         // Only _source is disabled — stored fields are kept because the leg still needs _id (and _id /
         // stored-field retrieval is cheap relative to _source).
         source.fetchSource(false);
+
+        // When the request asked for explain, run this leg's sub-search with explain enabled so Lucene
+        // returns a per-hit Explanation. The coordinator captures it on each candidate (see
+        // extractCandidates) and assembles the user-facing explanation tree after fusion/reshaping.
+        if (explain) {
+            source.explain(true);
+        }
 
         if (sorts != null) {
             for (SortBuilder<?> sort : sorts) {

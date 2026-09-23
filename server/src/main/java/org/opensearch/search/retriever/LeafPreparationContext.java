@@ -34,26 +34,37 @@ public final class LeafPreparationContext {
 
     private final int inheritedWindow;
     private final boolean fusionGoverned;
+    private final boolean explain;
 
-    private LeafPreparationContext(int inheritedWindow, boolean fusionGoverned) {
+    private LeafPreparationContext(int inheritedWindow, boolean fusionGoverned, boolean explain) {
         this.inheritedWindow = inheritedWindow;
         this.fusionGoverned = fusionGoverned;
+        this.explain = explain;
     }
 
-    /** The root context: nothing above, not fusion-governed, no inherited window. */
+    /** The root context: nothing above, not fusion-governed, no inherited window, explain off. */
     public static LeafPreparationContext root() {
-        return new LeafPreparationContext(NO_WINDOW, false);
+        return new LeafPreparationContext(NO_WINDOW, false, false);
+    }
+
+    /**
+     * The root context with the request-level {@code explain} flag. Explain is a top-down request concern:
+     * it propagates unchanged to every leg so each leaf sub-search can run with Lucene explain enabled.
+     */
+    public static LeafPreparationContext root(boolean explain) {
+        return new LeafPreparationContext(NO_WINDOW, false, explain);
     }
 
     /**
      * Derive the context a fusion node hands to its children: mark the subtree fusion-governed and set the
      * window every descendant leg must fetch. An inner fusion is its own scope for the depth it needs, so it
-     * substitutes its own window regardless of any window inherited from above.
+     * substitutes its own window regardless of any window inherited from above. The {@code explain} flag is
+     * preserved unchanged.
      *
      * @param window the fusion node's effective {@code rank_window_size}
      */
     public LeafPreparationContext underFusion(int window) {
-        return new LeafPreparationContext(window, true);
+        return new LeafPreparationContext(window, true, explain);
     }
 
     /** The fetch depth handed down from the nearest fusion ancestor, or {@link #NO_WINDOW} if none. */
@@ -64,5 +75,10 @@ public final class LeafPreparationContext {
     /** {@code true} once any ancestor is a fusion compound; monotonic down the tree. */
     public boolean isFusionGoverned() {
         return fusionGoverned;
+    }
+
+    /** {@code true} when the request set {@code explain: true}; every leg runs its sub-search with explain. */
+    public boolean isExplain() {
+        return explain;
     }
 }

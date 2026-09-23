@@ -8,6 +8,7 @@
 
 package org.opensearch.search.retriever;
 
+import org.apache.lucene.search.Explanation;
 import org.opensearch.core.index.shard.ShardId;
 
 import java.util.Objects;
@@ -37,13 +38,21 @@ final class RetrieverCandidate {
     private final String id;
     private final float score;
     private final int position;
+    // Coordinator-only: this candidate's leg-search Lucene explanation, captured when explain is requested.
+    // Null when explain was not requested (the common path) or for a candidate produced purely by fusion.
+    private final Explanation explanation;
 
     RetrieverCandidate(String index, ShardId shardId, String id, float score, int position) {
+        this(index, shardId, id, score, position, null);
+    }
+
+    RetrieverCandidate(String index, ShardId shardId, String id, float score, int position, Explanation explanation) {
         this.index = Objects.requireNonNull(index, "index");
         this.shardId = Objects.requireNonNull(shardId, "shardId");
         this.id = Objects.requireNonNull(id, "id");
         this.score = score;
         this.position = position;
+        this.explanation = explanation;
     }
 
     String index() {
@@ -66,6 +75,11 @@ final class RetrieverCandidate {
         return position;
     }
 
+    /** This candidate's leg-search Lucene explanation, or {@code null} if explain was not requested. */
+    Explanation explanation() {
+        return explanation;
+    }
+
     /**
      * Project this coordinator-side candidate to the wire {@link RankDoc}, narrowing the full
      * {@link ShardId} to the {@code int} shard number the broadcast query filters on. Coordinator-only
@@ -80,7 +94,7 @@ final class RetrieverCandidate {
      * Used when a fusion/reshape node re-ranks a candidate without changing which document it is.
      */
     RetrieverCandidate withScoreAndPosition(float newScore, int newPosition) {
-        return new RetrieverCandidate(index, shardId, id, newScore, newPosition);
+        return new RetrieverCandidate(index, shardId, id, newScore, newPosition, explanation);
     }
 
     @Override
