@@ -165,8 +165,7 @@ public class RetrieverProfile implements ToXContentFragment {
      * Skipped when the overhead is not positive (e.g. timings not captured, or clock skew), so the
      * breakdown never shows a misleading zero or negative.
      */
-    private static void writeOverheadBreakdown(XContentBuilder builder, long phaseWallNanos, long productiveNanos)
-        throws IOException {
+    private static void writeOverheadBreakdown(XContentBuilder builder, long phaseWallNanos, long productiveNanos) throws IOException {
         long overhead = phaseWallNanos - productiveNanos;
         if (overhead > 0) {
             builder.startObject(BREAKDOWN_FIELD);
@@ -180,7 +179,10 @@ public class RetrieverProfile implements ToXContentFragment {
         long max = 0L;
         for (ProfileShardResult shard : shardResults.values()) {
             for (QueryProfileShardResult queryResult : shard.getQueryProfileResults()) {
-                max = Math.max(max, queryResult.getQueryResults().stream().mapToLong(org.opensearch.search.profile.ProfileResult::getTime).max().orElse(0L));
+                max = Math.max(
+                    max,
+                    queryResult.getQueryResults().stream().mapToLong(org.opensearch.search.profile.ProfileResult::getTime).max().orElse(0L)
+                );
             }
         }
         return max;

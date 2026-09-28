@@ -186,13 +186,13 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
     public RetrieverProfile.Node buildProfile() {
         // A compound reports its wall time (incl. waiting for children) and one child profile node per child.
         // Its breakdown itemizes that wall time so it reconciles exactly:
-        //   total = fuse + orchestration_overhead + max(child total)
+        // total = fuse + orchestration_overhead + max(child total)
         // - fuse: the fuse() own-compute (pure, no I/O).
         // - orchestration_overhead: everything else the node spends between starting and finishing that is
-        //   NOT a child's own measured time — child fan-out (request build, dispatch, the leg-concurrency
-        //   limiter), listener/thread hand-off, the pre-fuse gathering of child results, and parallel
-        //   scheduling skew. Children run in PARALLEL, so productive child time is max(child), not the sum;
-        //   orchestration_overhead is therefore nodeElapsed - fuse - max(child), emitted only when positive.
+        // NOT a child's own measured time — child fan-out (request build, dispatch, the leg-concurrency
+        // limiter), listener/thread hand-off, the pre-fuse gathering of child results, and parallel
+        // scheduling skew. Children run in PARALLEL, so productive child time is max(child), not the sum;
+        // orchestration_overhead is therefore nodeElapsed - fuse - max(child), emitted only when positive.
         List<RetrieverProfile.Node> childProfiles = new ArrayList<>(children.size());
         long maxChildNanos = 0L;
         for (RetrieverBuilder child : children) {

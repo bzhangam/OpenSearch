@@ -74,6 +74,14 @@ public final class RetrieverModuleRegistration {
             }
         });
 
+        builder.register(PinRetrieverBuilder.NAME, parser -> {
+            try {
+                return PinRetrieverBuilder.fromXContent(parser);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Failed to parse [" + PinRetrieverBuilder.NAME + "] retriever", e);
+            }
+        });
+
         // Plugin-provided retriever types (RetrieverPlugin SPI).
         for (SearchPlugin plugin : plugins) {
             if (plugin instanceof RetrieverPlugin) {
