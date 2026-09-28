@@ -102,6 +102,13 @@ public abstract class RetrieverBuilder implements ToXContentObject {
     List<RetrieverCandidate> resolvedResult;
 
     /**
+     * Wall-clock time (ns) this node's {@link #resolve} took — for a leaf, the sub-search dispatch; for a
+     * compound, the whole fan-out-and-fuse. Recorded only when profiling is requested; feeds
+     * {@link #buildProfile()}. Package-internal.
+     */
+    long nodeElapsedNanos;
+
+    /**
      * Resolve this node and its subtree, invoking {@code whenDone} exactly once on completion.
      * <p>
      * <b>Completion may be synchronous or asynchronous</b> (see the class-level dispatch note); do no
@@ -186,6 +193,16 @@ public abstract class RetrieverBuilder implements ToXContentObject {
      *         did not contribute the document to its resolved output
      */
     public abstract Explanation buildExplanation(String index, String id);
+
+    /**
+     * Assemble this node's {@link RetrieverProfile.Node} after the tree is fully resolved. Only invoked when
+     * the request set {@code profile: true}. A leaf reports its sub-search dispatch time and per-shard query
+     * profiles; a compound/transformer reports its wall time, its own-compute {@code breakdown} (fusion /
+     * normalization), and its child nodes. The node's {@code total_time_in_nanos} is {@link #nodeElapsedNanos}.
+     *
+     * @return the profile subtree rooted at this node
+     */
+    public abstract RetrieverProfile.Node buildProfile();
 
     /**
      * The query used for the global leg (aggregations / {@code track_total_hits}) — the union of all leaf

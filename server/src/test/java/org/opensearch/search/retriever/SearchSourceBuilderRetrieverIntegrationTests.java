@@ -75,6 +75,11 @@ public class SearchSourceBuilderRetrieverIntegrationTests extends OpenSearchTest
             }
 
             @Override
+            public RetrieverProfile.Node buildProfile() {
+                return RetrieverProfile.leaf("test", 0L, Collections.emptyMap());
+            }
+
+            @Override
             public QueryBuilder extractAggregationQuery() {
                 return new MatchAllQueryBuilder();
             }

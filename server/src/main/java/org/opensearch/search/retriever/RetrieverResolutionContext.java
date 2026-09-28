@@ -56,6 +56,21 @@ public class RetrieverResolutionContext {
     // resolution when explain was requested; null/empty otherwise. Merged onto the final hits.
     private volatile Map<String, Explanation> explanations;
 
+    // Coordinator-assembled retriever profile tree (per-node timing + per-leg shard profiles), set once
+    // after tree resolution when profile was requested; null otherwise. Combined with the global-leg and
+    // final-search shard profiles in merge() into the response profile section.
+    private volatile RetrieverProfile.Node retrieverProfileTree;
+
+    // Wall time (ns) of the whole self_resolve phase (tree resolution + global leg, run in parallel).
+    private volatile long selfResolveTimeInNanos;
+
+    // Wall time (ns) of the global-leg search alone (0 when no global leg ran).
+    private volatile long globalLegTimeInNanos;
+
+    // System.nanoTime() stamped when self_resolve completes; used in merge() to measure the sequential
+    // rank_docs_query phase wall (now - selfResolveEndNanos). 0 when profiling was not requested.
+    private volatile long selfResolveEndNanos;
+
     /**
      * @param trackTotalHitsRequested whether the user explicitly requested {@code track_total_hits}; only
      *                                then does {@link #merge} overwrite the response total from the global
@@ -90,6 +105,29 @@ public class RetrieverResolutionContext {
         this.explanations = explanations;
     }
 
+    /**
+     * Set the coordinator-assembled retriever profile tree and the self_resolve phase timings. Called once
+     * by the executor when self_resolve completes (tree + global leg both done) and {@code profile: true}
+     * was requested.
+     *
+     * @param retrieverProfileTree    the resolved retriever node tree
+     * @param selfResolveTimeInNanos  wall time (ns) of the whole self_resolve phase (tree || global leg)
+     * @param globalLegTimeInNanos    wall time (ns) of the global-leg search alone (0 when none ran)
+     * @param selfResolveEndNanos     {@code System.nanoTime()} at self_resolve completion; the rank_docs_query
+     *                                phase wall is measured from here in {@link #merge}
+     */
+    public void setRetrieverProfile(
+        RetrieverProfile.Node retrieverProfileTree,
+        long selfResolveTimeInNanos,
+        long globalLegTimeInNanos,
+        long selfResolveEndNanos
+    ) {
+        this.retrieverProfileTree = retrieverProfileTree;
+        this.selfResolveTimeInNanos = selfResolveTimeInNanos;
+        this.globalLegTimeInNanos = globalLegTimeInNanos;
+        this.selfResolveEndNanos = selfResolveEndNanos;
+    }
+
     public boolean isTrackTotalHitsRequested() {
         return trackTotalHitsRequested;
     }
@@ -109,7 +147,7 @@ public class RetrieverResolutionContext {
         SearchResponse withExplanations = applyExplanations(finalResponse);
 
         if (globalLegResponse == null) {
-            return withExplanations;
+            return applyRetrieverProfile(withExplanations, finalResponse);
         }
 
         SearchHits finalHits = withExplanations.getHits();
@@ -135,6 +173,7 @@ public class RetrieverResolutionContext {
             withExplanations.isTerminatedEarly(),
             withExplanations.getNumReducePhases()
         );
+        attachRetrieverProfile(sections, finalResponse);
 
         return new SearchResponse(
             sections,
@@ -146,6 +185,63 @@ public class RetrieverResolutionContext {
             withExplanations.getShardFailures(),
             withExplanations.getClusters(),
             withExplanations.pointInTimeId()
+        );
+    }
+
+    /**
+     * Build the {@link RetrieverProfile} (retriever tree + global-leg + rank_docs_query shard profiles +
+     * total time) and attach it to the sections so it renders under the {@code profile} key. No-op when
+     * profiling was not requested. The {@code rank_docs_query} profiles come from the final search's own
+     * profile results.
+     */
+    private void attachRetrieverProfile(SearchResponseSections sections, SearchResponse finalResponse) {
+        if (retrieverProfileTree == null) {
+            return;
+        }
+        // The rank_docs_query phase runs sequentially after self_resolve; its wall is the time from
+        // self_resolve completion to now (this merge runs on the final response listener). Guard against a
+        // missing stamp (0) so we never report a bogus multi-year duration from epoch-relative nanoTime.
+        long rankDocsQueryTimeInNanos = selfResolveEndNanos > 0 ? Math.max(0L, System.nanoTime() - selfResolveEndNanos) : 0L;
+        RetrieverProfile profile = RetrieverProfile.builder()
+            .retriever(retrieverProfileTree)
+            .selfResolveTimeInNanos(selfResolveTimeInNanos)
+            .globalLegProfile(globalLegResponse == null ? null : globalLegResponse.getProfileResults())
+            .globalLegTimeInNanos(globalLegTimeInNanos)
+            .rankDocsQueryProfile(finalResponse.getProfileResults())
+            .rankDocsQueryTimeInNanos(rankDocsQueryTimeInNanos)
+            .build();
+        sections.setRetrieverProfile(profile);
+    }
+
+    /**
+     * Rebuild {@code response} with the retriever profile attached to its sections (used on the no-global-leg
+     * path). Returns {@code response} unchanged when profiling was not requested.
+     */
+    private SearchResponse applyRetrieverProfile(SearchResponse response, SearchResponse finalResponse) {
+        if (retrieverProfileTree == null) {
+            return response;
+        }
+        SearchHits hits = response.getHits();
+        SearchResponseSections sections = new InternalSearchResponse(
+            hits,
+            response.getAggregations() instanceof InternalAggregations ? (InternalAggregations) response.getAggregations() : null,
+            response.getSuggest(),
+            response.getProfileResults() == null ? null : new SearchProfileShardResults(response.getProfileResults()),
+            response.isTimedOut(),
+            response.isTerminatedEarly(),
+            response.getNumReducePhases()
+        );
+        attachRetrieverProfile(sections, finalResponse);
+        return new SearchResponse(
+            sections,
+            response.getScrollId(),
+            response.getTotalShards(),
+            response.getSuccessfulShards(),
+            response.getSkippedShards(),
+            response.getTook().millis(),
+            response.getShardFailures(),
+            response.getClusters(),
+            response.pointInTimeId()
         );
     }
 

@@ -35,36 +35,39 @@ public final class LeafPreparationContext {
     private final int inheritedWindow;
     private final boolean fusionGoverned;
     private final boolean explain;
+    private final boolean profile;
 
-    private LeafPreparationContext(int inheritedWindow, boolean fusionGoverned, boolean explain) {
+    private LeafPreparationContext(int inheritedWindow, boolean fusionGoverned, boolean explain, boolean profile) {
         this.inheritedWindow = inheritedWindow;
         this.fusionGoverned = fusionGoverned;
         this.explain = explain;
+        this.profile = profile;
     }
 
-    /** The root context: nothing above, not fusion-governed, no inherited window, explain off. */
+    /** The root context: nothing above, not fusion-governed, no inherited window, explain/profile off. */
     public static LeafPreparationContext root() {
-        return new LeafPreparationContext(NO_WINDOW, false, false);
+        return new LeafPreparationContext(NO_WINDOW, false, false, false);
     }
 
     /**
-     * The root context with the request-level {@code explain} flag. Explain is a top-down request concern:
-     * it propagates unchanged to every leg so each leaf sub-search can run with Lucene explain enabled.
+     * The root context with the request-level {@code explain} and {@code profile} flags. Both are top-down
+     * request concerns: they propagate unchanged to every leg so each leaf sub-search can run with Lucene
+     * explain and/or query profiling enabled.
      */
-    public static LeafPreparationContext root(boolean explain) {
-        return new LeafPreparationContext(NO_WINDOW, false, explain);
+    public static LeafPreparationContext root(boolean explain, boolean profile) {
+        return new LeafPreparationContext(NO_WINDOW, false, explain, profile);
     }
 
     /**
      * Derive the context a fusion node hands to its children: mark the subtree fusion-governed and set the
      * window every descendant leg must fetch. An inner fusion is its own scope for the depth it needs, so it
-     * substitutes its own window regardless of any window inherited from above. The {@code explain} flag is
-     * preserved unchanged.
+     * substitutes its own window regardless of any window inherited from above. The {@code explain} and
+     * {@code profile} flags are preserved unchanged.
      *
      * @param window the fusion node's effective {@code rank_window_size}
      */
     public LeafPreparationContext underFusion(int window) {
-        return new LeafPreparationContext(window, true, explain);
+        return new LeafPreparationContext(window, true, explain, profile);
     }
 
     /** The fetch depth handed down from the nearest fusion ancestor, or {@link #NO_WINDOW} if none. */
@@ -80,5 +83,10 @@ public final class LeafPreparationContext {
     /** {@code true} when the request set {@code explain: true}; every leg runs its sub-search with explain. */
     public boolean isExplain() {
         return explain;
+    }
+
+    /** {@code true} when the request set {@code profile: true}; every leg runs its sub-search with profiling. */
+    public boolean isProfile() {
+        return profile;
     }
 }

@@ -21,6 +21,7 @@ import org.opensearch.transport.client.Client;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +53,9 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
     public static final int MIN_CHILDREN = 2;
 
     protected final List<RetrieverBuilder> children;
+
+    // Wall time (ns) of the fuse() own-compute, recorded in doResolve; surfaced in the profile breakdown.
+    private long fuseElapsedNanos;
 
     protected CompoundRetrieverBuilder(List<RetrieverBuilder> children) {
         this.children = children == null ? new ArrayList<>() : new ArrayList<>(children);
@@ -95,8 +99,12 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
     @Override
     void resolve(Client client, String[] indices, SearchRequest original, ActionListener<Void> whenDone) {
         // Fan out to children; once all are resolved, fuse them inline on the last child's callback thread.
+        // Record wall time from dispatch to fused completion (includes waiting for children); doResolve
+        // separately times the fuse() own-compute for the profile breakdown.
+        final long startNanos = System.nanoTime();
         resolveChildren(client, indices, original, ActionListener.wrap(v -> {
             doResolve();
+            this.nodeElapsedNanos = System.nanoTime() - startNanos;
             whenDone.onResponse(null);
         }, whenDone::onFailure));
     }
@@ -108,7 +116,9 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
             List<RetrieverCandidate> childResult = child.getResolvedResult();
             childResults.add(childResult == null ? List.of() : childResult);
         }
+        long fuseStartNanos = System.nanoTime();
         this.resolvedResult = fuse(childResults);
+        this.fuseElapsedNanos = System.nanoTime() - fuseStartNanos;
     }
 
     /**
@@ -170,6 +180,33 @@ public abstract class CompoundRetrieverBuilder extends RetrieverBuilder {
             return childExplanation;
         }
         return Explanation.noMatch("not present in this leg");
+    }
+
+    @Override
+    public RetrieverProfile.Node buildProfile() {
+        // A compound reports its wall time (incl. waiting for children) and one child profile node per child.
+        // Its breakdown itemizes that wall time so it reconciles exactly:
+        //   total = fuse + orchestration_overhead + max(child total)
+        // - fuse: the fuse() own-compute (pure, no I/O).
+        // - orchestration_overhead: everything else the node spends between starting and finishing that is
+        //   NOT a child's own measured time — child fan-out (request build, dispatch, the leg-concurrency
+        //   limiter), listener/thread hand-off, the pre-fuse gathering of child results, and parallel
+        //   scheduling skew. Children run in PARALLEL, so productive child time is max(child), not the sum;
+        //   orchestration_overhead is therefore nodeElapsed - fuse - max(child), emitted only when positive.
+        List<RetrieverProfile.Node> childProfiles = new ArrayList<>(children.size());
+        long maxChildNanos = 0L;
+        for (RetrieverBuilder child : children) {
+            RetrieverProfile.Node childProfile = child.buildProfile();
+            childProfiles.add(childProfile);
+            maxChildNanos = Math.max(maxChildNanos, childProfile.getTotalTimeInNanos());
+        }
+        Map<String, Long> breakdown = new LinkedHashMap<>();
+        breakdown.put("fuse", fuseElapsedNanos);
+        long orchestrationOverhead = nodeElapsedNanos - fuseElapsedNanos - maxChildNanos;
+        if (orchestrationOverhead > 0) {
+            breakdown.put("orchestration_overhead", orchestrationOverhead);
+        }
+        return RetrieverProfile.inner(getName(), nodeElapsedNanos, breakdown, childProfiles);
     }
 
     @Override

@@ -310,6 +310,11 @@ public class RetrieverExecutorTests extends OpenSearchTestCase {
         }
 
         @Override
+        public RetrieverProfile.Node buildProfile() {
+            return RetrieverProfile.leaf("test", 0L, Collections.emptyMap());
+        }
+
+        @Override
         public QueryBuilder extractAggregationQuery() {
             return new MatchAllQueryBuilder();
         }
@@ -362,6 +367,11 @@ public class RetrieverExecutorTests extends OpenSearchTestCase {
         @Override
         public Explanation buildExplanation(String index, String id) {
             return null;
+        }
+
+        @Override
+        public RetrieverProfile.Node buildProfile() {
+            return RetrieverProfile.leaf("test", 0L, Collections.emptyMap());
         }
 
         @Override

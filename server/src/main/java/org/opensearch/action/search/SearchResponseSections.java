@@ -35,6 +35,7 @@ package org.opensearch.action.search;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.ParseField;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.xcontent.ToXContent;
 import org.opensearch.core.xcontent.ToXContentFragment;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.search.SearchExtBuilder;
@@ -76,6 +77,11 @@ public class SearchResponseSections implements ToXContentFragment {
     protected final int numReducePhases;
     protected final List<SearchExtBuilder> searchExtBuilders = new ArrayList<>();
     protected final List<ProcessorExecutionDetail> processorResult = new ArrayList<>();
+    // Coordinator-only, non-Writeable: when set (by the retriever framework at response-merge time), it is
+    // rendered under the "profile" key in place of the default shard profileResults. It carries the
+    // retriever profile tree (per-node timing + per-leg/global-leg/rank_docs_query shard profiles). Never
+    // serialized over the wire — it is assembled on the coordinator and rendered straight to the response.
+    protected ToXContent retrieverProfile;
 
     public SearchResponseSections(
         SearchHits hits,
@@ -193,7 +199,11 @@ public class SearchResponseSections implements ToXContentFragment {
         if (suggest != null) {
             suggest.toXContent(builder, params);
         }
-        if (profileResults != null) {
+        if (retrieverProfile != null) {
+            // The retriever framework assembled a tree-structured profile on the coordinator; it renders the
+            // full "profile" section itself (as a fragment) in place of the default shard profileResults.
+            retrieverProfile.toXContent(builder, params);
+        } else if (profileResults != null) {
             profileResults.toXContent(builder, params);
         }
         if (!searchExtBuilders.isEmpty()) {
@@ -212,6 +222,19 @@ public class SearchResponseSections implements ToXContentFragment {
 
     public List<SearchExtBuilder> getSearchExtBuilders() {
         return Collections.unmodifiableList(this.searchExtBuilders);
+    }
+
+    /**
+     * Attach a coordinator-assembled retriever profile fragment. When set, it renders under the
+     * {@code profile} key of the response in place of the default shard profile results. Coordinator-only
+     * and not serialized over the wire.
+     */
+    public void setRetrieverProfile(ToXContent retrieverProfile) {
+        this.retrieverProfile = retrieverProfile;
+    }
+
+    public ToXContent getRetrieverProfile() {
+        return retrieverProfile;
     }
 
     public List<ProcessorExecutionDetail> getProcessorResult() {

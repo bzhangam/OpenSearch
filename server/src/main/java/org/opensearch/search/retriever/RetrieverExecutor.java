@@ -29,6 +29,7 @@ import org.opensearch.transport.client.Client;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -196,13 +197,22 @@ public class RetrieverExecutor {
                 && originalRequest.source() != null
                 && originalRequest.source().explain() != null
                 && originalRequest.source().explain();
-            root.prepareLeaves(LeafPreparationContext.root(explain));
+            boolean profile = originalRequest != null && originalRequest.source() != null && originalRequest.source().profile();
+            root.prepareLeaves(LeafPreparationContext.root(explain, profile));
 
             // Two independent async flows joined at the end: (1) tree resolution (the ranking) and, when
             // present, (2) the global leg (aggs / track_total_hits). The global leg does NOT gate the tree.
+            // For profiling, both run in parallel inside the self_resolve phase, so the phase wall is
+            // measured from a single shared start to the latch release (when both complete).
             boolean hasGlobalLeg = aggregations != null || trackTotalHits;
             final CountDown remaining = new CountDown(hasGlobalLeg ? 2 : 1);
             final AtomicReference<Exception> firstFailure = new AtomicReference<>();
+
+            // Profile accumulators (only written when profile==true): the shared self_resolve phase start,
+            // the resolved tree node (set by the tree leg), and the global-leg wall (set by the global leg).
+            final long phaseStartNanos = profile ? System.nanoTime() : 0L;
+            final AtomicReference<RetrieverProfile.Node> treeProfileNode = new AtomicReference<>();
+            final AtomicLong globalLegTimeInNanos = new AtomicLong(0L);
 
             ActionListener<Void> legDone = ActionListener.wrap(v -> {
                 if (remaining.countDown()) {
@@ -210,6 +220,18 @@ public class RetrieverExecutor {
                     if (failure != null) {
                         listener.onFailure(failure);
                     } else {
+                        // Both legs are done: this IS the end of the self_resolve phase. Assemble the profile
+                        // once here (not in the tree leg) so self_resolve.total spans tree || global_leg, and
+                        // stamp selfResolveEnd so merge() can measure the sequential rank_docs_query phase.
+                        if (profile) {
+                            long selfResolveEndNanos = System.nanoTime();
+                            context.setRetrieverProfile(
+                                treeProfileNode.get(),
+                                selfResolveEndNanos - phaseStartNanos,
+                                globalLegTimeInNanos.get(),
+                                selfResolveEndNanos
+                            );
+                        }
                         listener.onResponse(null);
                     }
                 }
@@ -221,8 +243,12 @@ public class RetrieverExecutor {
             });
 
             if (hasGlobalLeg) {
+                final long globalLegStartNanos = profile ? System.nanoTime() : 0L;
                 client.search(buildGlobalLeg(root.extractAggregationQuery()), ActionListener.wrap(response -> {
                     context.setGlobalLegResponse(response);
+                    if (profile) {
+                        globalLegTimeInNanos.set(System.nanoTime() - globalLegStartNanos);
+                    }
                     legDone.onResponse(null);
                 }, legDone::onFailure));
             }
@@ -233,11 +259,17 @@ public class RetrieverExecutor {
             // and PIT ops use the raw client — the cap is scoped to the tree's leaf legs, per its name.
             int maxConcurrentLegSearches = SearchSourceBuilderRetrieverIntegration.getMaxConcurrentLegSearches();
             Client legClient = maxConcurrentLegSearches > 0 ? new LegConcurrencyLimitingClient(client, maxConcurrentLegSearches) : client;
-            ActionListener<Void> resolveDone = explain ? ActionListener.wrap(v -> {
-                // Tree is resolved: assemble the per-document explanation tree over the fused window and
-                // stash it on the context so merge() can patch each hit's _explanation. Read-only over the
-                // resolved candidates; no I/O.
-                context.setExplanations(buildExplanations());
+            ActionListener<Void> resolveDone = (explain || profile) ? ActionListener.wrap(v -> {
+                // Tree is resolved. When explain was requested, assemble the per-document explanation tree
+                // over the fused window. When profile was requested, capture the retriever tree node (per-node
+                // timing + per-leg shard profiles) into the holder; the final profile is assembled at the
+                // latch release above once the global leg is also done. Both are read-only; no I/O.
+                if (explain) {
+                    context.setExplanations(buildExplanations());
+                }
+                if (profile) {
+                    treeProfileNode.set(root.buildProfile());
+                }
                 legDone.onResponse(null);
             }, legDone::onFailure) : legDone;
             root.resolve(legClient, indices, originalRequest, resolveDone);
@@ -274,6 +306,11 @@ public class RetrieverExecutor {
             source.trackTotalHitsUpTo(trackTotalHitsUpTo);
         } else {
             source.trackTotalHits(trackTotalHits);
+        }
+        // Profile the global leg too when the request profiles, so aggs / track_total_hits work over the
+        // union shows up as the profile's global_leg section.
+        if (originalRequest != null && originalRequest.source() != null && originalRequest.source().profile()) {
+            source.profile(true);
         }
         if (aggregations != null) {
             for (AggregationBuilder agg : aggregations.getAggregatorFactories()) {

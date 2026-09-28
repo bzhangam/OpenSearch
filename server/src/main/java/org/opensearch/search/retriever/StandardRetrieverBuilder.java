@@ -24,6 +24,7 @@ import org.opensearch.search.SearchService;
 import org.opensearch.search.builder.SearchSourceBuilder;
 import org.opensearch.search.collapse.CollapseBuilder;
 import org.opensearch.search.fetch.subphase.FieldAndFormat;
+import org.opensearch.search.profile.ProfileShardResult;
 import org.opensearch.search.rescore.RescorerBuilder;
 import org.opensearch.search.searchafter.SearchAfterBuilder;
 import org.opensearch.search.sort.SortBuilder;
@@ -33,6 +34,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The leaf retriever that wraps a standard OpenSearch query with optional result-set operations.
@@ -73,6 +75,13 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
     // Request-level explain flag captured during prepareLeaves; when true this leg's sub-search runs with
     // Lucene explain enabled so per-hit explanations flow into the coordinator-assembled explanation tree.
     private boolean explain = false;
+
+    // Request-level profile flag captured during prepareLeaves; when true this leg's sub-search runs with
+    // query profiling enabled so its per-shard profile results flow into the retriever profile tree.
+    private boolean profile = false;
+
+    // This leg's per-shard query profiles, captured from its sub-search response when profiling is on.
+    private Map<String, ProfileShardResult> legShardProfiles;
 
     /** Set by the executor after this leaf's sub-search returns — its dispatched ranked candidates. */
     private List<RetrieverCandidate> searchResult;
@@ -224,7 +233,12 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
     @Override
     void resolve(Client client, String[] indices, SearchRequest original, ActionListener<Void> whenDone) {
         // A leaf is the only node that does I/O: dispatch its own sub-search, then resolve on the response.
+        final long startNanos = profile ? System.nanoTime() : 0L;
         client.search(toSearchRequest(indices, original), ActionListener.wrap(response -> {
+            if (profile) {
+                this.nodeElapsedNanos = System.nanoTime() - startNanos;
+                this.legShardProfiles = response.getProfileResults();
+            }
             this.searchResult = extractCandidates(response);
             doResolve();
             whenDone.onResponse(null);
@@ -282,6 +296,14 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
     }
 
     @Override
+    public RetrieverProfile.Node buildProfile() {
+        // A leaf reports its sub-search dispatch time and the per-shard query profiles it captured. An empty
+        // map is used when the leg returned no profile results (e.g. no matching shards).
+        Map<String, ProfileShardResult> shards = legShardProfiles != null ? legShardProfiles : Map.of();
+        return RetrieverProfile.leaf(getName(), nodeElapsedNanos, shards);
+    }
+
+    @Override
     public QueryBuilder extractAggregationQuery() {
         return toLegQuery();
     }
@@ -315,6 +337,7 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
     @Override
     public void prepareLeaves(LeafPreparationContext context) {
         this.explain = context.isExplain();
+        this.profile = context.isProfile();
         if (context.isFusionGoverned()) {
             if (size != null) {
                 throw new IllegalArgumentException(
@@ -376,6 +399,13 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
         // extractCandidates) and assembles the user-facing explanation tree after fusion/reshaping.
         if (explain) {
             source.explain(true);
+        }
+
+        // When the request asked for profiling, run this leg's sub-search with profiling enabled so its
+        // per-shard query profiles can be captured on the response and nested under this leaf in the
+        // retriever profile tree.
+        if (profile) {
+            source.profile(true);
         }
 
         if (sorts != null) {
