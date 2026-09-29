@@ -89,6 +89,14 @@ Index `products` (`number_of_replicas: 0`), six docs a–f:
 - **Aggregations / `track_total_hits`** are computed over what the child matched; pinned
   non-matches do not inflate the union count.
 
+> **Class structure.** `pin` extends `TransformerRetrieverBuilder` — the single-child *reranker*
+> base (sibling to `CompoundRetrieverBuilder`, which is for ≥2-child fusion). The base provides the
+> shared single-child plumbing (child resolution, top-level-only enforcement, `RankDocsQuery`
+> projection, the profile node with `orchestration_overhead`, and the single `retriever` XContent
+> field); `pin` adds only the pin list, match mode, reorder/dedup reshape, and its explanation.
+> Future single-child rerankers (rescore, MMR/diversify, late-interaction) are expected to extend
+> the same base.
+
 ---
 
 # Integration test scenarios (`PinRetrieverIT`)
