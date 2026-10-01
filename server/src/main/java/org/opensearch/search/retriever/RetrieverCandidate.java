@@ -9,6 +9,7 @@
 package org.opensearch.search.retriever;
 
 import org.apache.lucene.search.Explanation;
+import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.index.shard.ShardId;
 
 import java.util.Objects;
@@ -28,10 +29,16 @@ import java.util.Objects;
  * executor narrows it to a {@link RankDoc} at {@code toQueryBuilder()} via {@link #toRankDoc()}; only the
  * {@code RankDoc} is broadcast to shards. Immutable — rewrites produce a copy via
  * {@link #withScoreAndPosition(float, int)}.
+ * <p>
+ * <b>Public API.</b> This is the input to {@link TransformerRetrieverBuilder#reshape(java.util.List)}, so a
+ * plugin-provided reranker (registered via {@code RetrieverPlugin}, e.g. the {@code diversify} retriever in
+ * the k-NN plugin) reads and re-ranks these across package boundaries. It is therefore public API, despite
+ * being a coordinator-only working record that never serializes.
  *
- * @opensearch.internal
+ * @opensearch.api
  */
-final class RetrieverCandidate {
+@PublicApi(since = "3.7.0")
+public final class RetrieverCandidate {
 
     private final String index;
     private final ShardId shardId;
@@ -42,11 +49,11 @@ final class RetrieverCandidate {
     // Null when explain was not requested (the common path) or for a candidate produced purely by fusion.
     private final Explanation explanation;
 
-    RetrieverCandidate(String index, ShardId shardId, String id, float score, int position) {
+    public RetrieverCandidate(String index, ShardId shardId, String id, float score, int position) {
         this(index, shardId, id, score, position, null);
     }
 
-    RetrieverCandidate(String index, ShardId shardId, String id, float score, int position, Explanation explanation) {
+    public RetrieverCandidate(String index, ShardId shardId, String id, float score, int position, Explanation explanation) {
         this.index = Objects.requireNonNull(index, "index");
         this.shardId = Objects.requireNonNull(shardId, "shardId");
         this.id = Objects.requireNonNull(id, "id");
@@ -55,28 +62,28 @@ final class RetrieverCandidate {
         this.explanation = explanation;
     }
 
-    String index() {
+    public String index() {
         return index;
     }
 
-    ShardId shardId() {
+    public ShardId shardId() {
         return shardId;
     }
 
-    String id() {
+    public String id() {
         return id;
     }
 
-    float score() {
+    public float score() {
         return score;
     }
 
-    int position() {
+    public int position() {
         return position;
     }
 
     /** This candidate's leg-search Lucene explanation, or {@code null} if explain was not requested. */
-    Explanation explanation() {
+    public Explanation explanation() {
         return explanation;
     }
 
@@ -84,6 +91,15 @@ final class RetrieverCandidate {
      * Project this coordinator-side candidate to the wire {@link RankDoc}, narrowing the full
      * {@link ShardId} to the {@code int} shard number the broadcast query filters on. Coordinator-only
      * state (explanation/timing, added in later sub-features) is intentionally dropped here.
+     */
+    /**
+     * Project this coordinator-side candidate to the wire {@link RankDoc}, narrowing the full
+     * {@link ShardId} to the {@code int} shard number the broadcast query filters on. Coordinator-only
+     * state (explanation/timing, added in later sub-features) is intentionally dropped here.
+     * <p>
+     * Package-private: only the same-package base ({@link TransformerRetrieverBuilder}/{@code CompoundRetrieverBuilder})
+     * narrows candidates to {@link RankDoc} at {@code toQueryBuilder()}. A plugin reshape never needs it, so it
+     * stays off the public surface (which keeps {@link RankDoc}, the wire form, out of public API).
      */
     RankDoc toRankDoc() {
         return new RankDoc(index, shardId.id(), id, score, position);
@@ -93,7 +109,7 @@ final class RetrieverCandidate {
      * A copy with a new score and position, preserving identity ({@code index}/{@code shardId}/{@code id}).
      * Used when a fusion/reshape node re-ranks a candidate without changing which document it is.
      */
-    RetrieverCandidate withScoreAndPosition(float newScore, int newPosition) {
+    public RetrieverCandidate withScoreAndPosition(float newScore, int newPosition) {
         return new RetrieverCandidate(index, shardId, id, newScore, newPosition, explanation);
     }
 
