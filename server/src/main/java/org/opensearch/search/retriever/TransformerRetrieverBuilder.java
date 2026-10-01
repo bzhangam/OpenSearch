@@ -59,6 +59,11 @@ public abstract class TransformerRetrieverBuilder extends RetrieverBuilder {
     protected boolean profile;
     private long childElapsedNanos;
 
+    // Fusion window inherited from an enclosing fusion, captured during prepareLeaves when this reranker
+    // opts in via preservesFusionWindow(); NO_WINDOW when top-level (not fusion-governed). A window-preserving
+    // reranker must emit exactly this many candidates so the fused window stays complete and stable.
+    protected int effectiveWindow = LeafPreparationContext.NO_WINDOW;
+
     protected TransformerRetrieverBuilder(RetrieverBuilder retriever) {
         this.retriever = retriever;
     }
@@ -91,16 +96,42 @@ public abstract class TransformerRetrieverBuilder extends RetrieverBuilder {
 
     @Override
     public void prepareLeaves(LeafPreparationContext context) {
-        if (context.isFusionGoverned()) {
-            throw new IllegalArgumentException(
-                "[" + getName() + "] retriever is only allowed at the top level, not inside a [rank_fusion]/[score_fusion] retriever"
-            );
-        }
         this.explain = context.isExplain();
         this.profile = context.isProfile();
-        // A reranker does not impose a window on its child; propagate the root flags unchanged so the child
-        // keeps its own sizing and the explain/profile flags flow down.
+        if (context.isFusionGoverned()) {
+            if (preservesFusionWindow() == false) {
+                throw new IllegalArgumentException(
+                    "[" + getName() + "] retriever is only allowed at the top level, not inside a [rank_fusion]/[score_fusion] retriever"
+                );
+            }
+            // Window-preserving reranker under fusion: it reorders/selects within the leg's window but emits the
+            // same candidate count the fusion node demands, so the fused window stays complete and reproducible.
+            // Capture that window as this node's output size and propagate the fusion context UNCHANGED to the
+            // child, so the child leg still fetches exactly rank_window_size candidates.
+            this.effectiveWindow = context.getInheritedWindow();
+            retriever.prepareLeaves(context);
+            return;
+        }
+        // Top level: a reranker does not impose a window on its child; propagate the root flags unchanged so the
+        // child keeps its own sizing and the explain/profile flags flow down. Output size is the request size.
+        this.effectiveWindow = LeafPreparationContext.NO_WINDOW;
         retriever.prepareLeaves(LeafPreparationContext.root(context.isExplain(), context.isProfile()));
+    }
+
+    /**
+     * Whether this reranker may sit inside a {@code rank_fusion}/{@code score_fusion} subtree. Default
+     * {@code false}: a reranker is top-level only, because shrinking a leg's candidate set would break the
+     * fusion-window contract (every leg must contribute exactly {@code rank_window_size} candidates so the
+     * fused window is complete and reproducible — see {@link LeafPreparationContext}).
+     * <p>
+     * A subclass that <b>preserves the candidate count</b> — reordering/selecting within the inherited window
+     * but emitting the same number of candidates (e.g. {@code diversify} diversify-and-reorder of the whole
+     * window) — overrides this to return {@code true} <i>when it is fusion-governed</i>. In that mode
+     * {@link #prepareLeaves} does not reject the node, records {@link #effectiveWindow} = the inherited window,
+     * and propagates the fusion context unchanged to the child so the leg still fetches the full window.
+     */
+    protected boolean preservesFusionWindow() {
+        return false;
     }
 
     @Override
