@@ -12,6 +12,8 @@ import org.apache.lucene.search.Explanation;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.index.shard.ShardId;
 
+import java.util.Collections;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -48,18 +50,38 @@ public final class RetrieverCandidate {
     // Coordinator-only: this candidate's leg-search Lucene explanation, captured when explain is requested.
     // Null when explain was not requested (the common path) or for a candidate produced purely by fusion.
     private final Explanation explanation;
+    // Coordinator-only: doc-value field values captured from the leg's query-phase hit, for a transformer
+    // that injected a docvalue_field onto the leg and reads it back here (e.g. the diversify retriever's
+    // vector_field ride-along). Empty for the common path. Keyed by field name; value is the raw
+    // docvalue list for that field (as SearchHit.field(name).getValues() returns).
+    private final Map<String, Object> fields;
 
     public RetrieverCandidate(String index, ShardId shardId, String id, float score, int position) {
-        this(index, shardId, id, score, position, null);
+        this(index, shardId, id, score, position, null, Collections.emptyMap());
     }
 
     public RetrieverCandidate(String index, ShardId shardId, String id, float score, int position, Explanation explanation) {
+        this(index, shardId, id, score, position, explanation, Collections.emptyMap());
+    }
+
+    public RetrieverCandidate(
+        String index,
+        ShardId shardId,
+        String id,
+        float score,
+        int position,
+        Explanation explanation,
+        Map<String, Object> fields
+    ) {
         this.index = Objects.requireNonNull(index, "index");
         this.shardId = Objects.requireNonNull(shardId, "shardId");
         this.id = Objects.requireNonNull(id, "id");
         this.score = score;
         this.position = position;
         this.explanation = explanation;
+        this.fields = fields == null || fields.isEmpty()
+            ? Collections.emptyMap()
+            : Collections.unmodifiableMap(new java.util.HashMap<>(fields));
     }
 
     public String index() {
@@ -88,14 +110,32 @@ public final class RetrieverCandidate {
     }
 
     /**
-     * Project this coordinator-side candidate to the wire {@link RankDoc}, narrowing the full
-     * {@link ShardId} to the {@code int} shard number the broadcast query filters on. Coordinator-only
-     * state (explanation/timing, added in later sub-features) is intentionally dropped here.
+     * Doc-value field values captured from the leg's query-phase hit, keyed by field name; empty on the
+     * common path. A transformer that injected a {@code docvalue_field} onto the leg (e.g. the
+     * {@code diversify} retriever's {@code vector_field}) reads the value back here instead of issuing a
+     * second fetch. The value shape matches {@code SearchHit.field(name).getValues()} (a {@code List}).
      */
+    public Map<String, Object> fields() {
+        return fields;
+    }
+
+    /** Convenience: the captured doc-value for a single field name, or {@code null} if not present. */
+    public Object field(String name) {
+        return fields.get(name);
+    }
+
+    /**
+     * A copy carrying the given doc-value fields, preserving identity, score, position, and explanation.
+     * Used by the leaf when it captures injected {@code docvalue_fields} off a leg hit.
+     */
+    public RetrieverCandidate withFields(Map<String, Object> newFields) {
+        return new RetrieverCandidate(index, shardId, id, score, position, explanation, newFields);
+    }
+
     /**
      * Project this coordinator-side candidate to the wire {@link RankDoc}, narrowing the full
      * {@link ShardId} to the {@code int} shard number the broadcast query filters on. Coordinator-only
-     * state (explanation/timing, added in later sub-features) is intentionally dropped here.
+     * state (explanation/fields/timing) is intentionally dropped here.
      * <p>
      * Package-private: only the same-package base ({@link TransformerRetrieverBuilder}/{@code CompoundRetrieverBuilder})
      * narrows candidates to {@link RankDoc} at {@code toQueryBuilder()}. A plugin reshape never needs it, so it
@@ -106,11 +146,12 @@ public final class RetrieverCandidate {
     }
 
     /**
-     * A copy with a new score and position, preserving identity ({@code index}/{@code shardId}/{@code id}).
-     * Used when a fusion/reshape node re-ranks a candidate without changing which document it is.
+     * A copy with a new score and position, preserving identity ({@code index}/{@code shardId}/{@code id}),
+     * explanation, and any captured doc-value fields. Used when a fusion/reshape node re-ranks a candidate
+     * without changing which document it is.
      */
     public RetrieverCandidate withScoreAndPosition(float newScore, int newPosition) {
-        return new RetrieverCandidate(index, shardId, id, newScore, newPosition, explanation);
+        return new RetrieverCandidate(index, shardId, id, newScore, newPosition, explanation, fields);
     }
 
     @Override

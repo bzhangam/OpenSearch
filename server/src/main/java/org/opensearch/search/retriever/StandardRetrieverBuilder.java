@@ -12,6 +12,7 @@ import org.apache.lucene.search.Explanation;
 import org.opensearch.action.search.SearchRequest;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.common.document.DocumentField;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.xcontent.XContentBuilder;
@@ -33,6 +34,7 @@ import org.opensearch.transport.client.Client;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -201,6 +203,21 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
         return docvalueFields;
     }
 
+    /**
+     * Append a doc-value field to this leaf's sub-search. Used by a transformer that needs a field value to
+     * ride along on the leg's own fetch rather than issuing a second search — e.g. the {@code diversify}
+     * retriever injecting its {@code vector_field} ({@code format=array}) so MMR can read vectors without a
+     * separate round trip. Idempotent on an exact duplicate so repeated preparation does not double-add.
+     */
+    public void addDocvalueField(FieldAndFormat field) {
+        if (this.docvalueFields == null) {
+            this.docvalueFields = new ArrayList<>();
+        }
+        if (this.docvalueFields.contains(field) == false) {
+            this.docvalueFields.add(field);
+        }
+    }
+
     public List<RescorerBuilder> getRescorers() {
         return rescorers;
     }
@@ -256,7 +273,19 @@ public class StandardRetrieverBuilder extends RetrieverBuilder {
                 // A hit must carry its shard for the (index, shardId) scoping the RankDocsQuery relies on.
                 throw new IllegalStateException("retriever leg hit [" + hit.getId() + "] has no shard target");
             }
-            candidates.add(new RetrieverCandidate(hit.getIndex(), shardId, hit.getId(), hit.getScore(), position++, hit.getExplanation()));
+            // Capture any doc-value fields the hit carries (e.g. a vector_field a transformer injected onto
+            // this leg) so a reranker can read them without a second fetch. Empty on the common path.
+            Map<String, Object> fields = Collections.emptyMap();
+            Map<String, DocumentField> documentFields = hit.getFields();
+            if (documentFields != null && documentFields.isEmpty() == false) {
+                fields = new HashMap<>(documentFields.size());
+                for (Map.Entry<String, DocumentField> entry : documentFields.entrySet()) {
+                    fields.put(entry.getKey(), entry.getValue().getValues());
+                }
+            }
+            candidates.add(
+                new RetrieverCandidate(hit.getIndex(), shardId, hit.getId(), hit.getScore(), position++, hit.getExplanation(), fields)
+            );
         }
         return candidates;
     }

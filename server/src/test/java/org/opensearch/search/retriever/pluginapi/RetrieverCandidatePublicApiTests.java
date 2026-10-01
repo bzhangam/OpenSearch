@@ -50,6 +50,35 @@ public class RetrieverCandidatePublicApiTests extends OpenSearchTestCase {
         assertEquals(0, re.position());
     }
 
+    public void testFieldsEmptyByDefault() {
+        RetrieverCandidate c = new RetrieverCandidate("idx", shard(), "doc-1", 1.5f, 3);
+        assertTrue("fields empty on the common path", c.fields().isEmpty());
+        assertNull(c.field("embedding"));
+    }
+
+    public void testWithFieldsAndPreservationAcrossReScore() {
+        // Simulate the vector ride-along: a docvalue list captured off the leg hit.
+        java.util.List<Double> vector = java.util.List.of(0.1, 0.2, 0.3);
+        RetrieverCandidate base = new RetrieverCandidate("idx", shard(), "doc-1", 1.5f, 3);
+        RetrieverCandidate withVec = base.withFields(java.util.Map.of("embedding", vector));
+
+        assertEquals(vector, withVec.field("embedding"));
+        // base is unchanged (immutability)
+        assertTrue(base.fields().isEmpty());
+
+        // A reranker re-scores/re-orders; the captured vector must survive the copy so reshape can read it.
+        RetrieverCandidate reRanked = withVec.withScoreAndPosition(0.5f, 0);
+        assertEquals("vector survives re-score/re-order", vector, reRanked.field("embedding"));
+        assertEquals(0.5f, reRanked.score(), 0.0f);
+    }
+
+    public void testFieldsMapIsUnmodifiable() {
+        RetrieverCandidate c = new RetrieverCandidate("idx", shard(), "doc-1", 1.5f, 3).withFields(
+            java.util.Map.of("embedding", java.util.List.of(0.1))
+        );
+        expectThrows(UnsupportedOperationException.class, () -> c.fields().put("x", java.util.List.of(1.0)));
+    }
+
     /**
      * Simulates the shape of a plugin reshape: read candidates via public accessors and emit a re-ranked
      * copy list using the public {@code withScoreAndPosition}. Compiles only because the surface is public.
