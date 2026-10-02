@@ -10,6 +10,11 @@ retriever** in the framework.
   `https://github.com/bzhangam/OpenSearch/releases/download/retriever-framework-3.7-demo/opensearch-3.7.0-SNAPSHOT-linux-x64.tar.gz`
 - **Platform:** Linux x86_64. **Java:** bundled (ships its own JDK). Marked **pre-release** (SNAPSHOT).
 
+> **Don't want to build/run it yourself?** A live, public demo cluster is already running with these
+> retrievers and sample data. See **[`retriever-framework-playground.md`](./retriever-framework-playground.md)**
+> for the endpoint, login, seeded indexes, a deployed embedding model, and copy-paste queries with real
+> example output.
+
 ---
 
 ## What is the retriever framework?
